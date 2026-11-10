@@ -26,6 +26,12 @@ BLAST_URL = os.environ.get("CHEMBL_BLAST_URL", "").rstrip("/")
 UNIPROT = re.compile(r"^([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})(?:\.\d+)?$")
 
 
+def like_prefix(s):
+    """LIKE pattern for 'starts with s.': '_' and '%' in accessions (XP_..., WP_...) are wildcards otherwise, and
+    'XP_123.%' would range-scan every accession starting with 'XP'."""
+    return s.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%") + ".%"
+
+
 def available(cur):
     """True when the nr tables are readable (the join endpoints answer 503 otherwise)."""
     try:
@@ -69,7 +75,7 @@ def nr_entries(cur, uniprot_accs):
     out = {}
     for u in sorted(set(a for a in uniprot_accs if a)):
         rows = chembl.q(cur, f"SELECT a.oid, a.acc FROM {NR_DB}.blast_acc a WHERE a.acc LIKE %s "
-                             "ORDER BY a.acc DESC LIMIT 1", (u + ".%",))      # newest version first
+                             "ORDER BY a.acc DESC LIMIT 1", (like_prefix(u),))      # newest version first
         if rows:
             out[u] = {"nr_acc": rows[0]["acc"], "oid": rows[0]["oid"]}
     oids = sorted({e["oid"] for e in out.values()})
@@ -146,7 +152,7 @@ def protein_chembl(cur, acc, compounds_limit=200):
     rows = chembl.q(cur, f"SELECT oid, acc FROM {NR_DB}.blast_acc WHERE acc = %s LIMIT 1", (acc,))
     if not rows and "." not in acc:
         rows = chembl.q(cur, f"SELECT oid, acc FROM {NR_DB}.blast_acc WHERE acc LIKE %s ORDER BY acc LIMIT 1",
-                        (acc + ".%",))
+                        (like_prefix(acc),))
     if not rows:
         return None
     oid = rows[0]["oid"]

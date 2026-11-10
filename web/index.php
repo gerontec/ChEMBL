@@ -220,6 +220,7 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
   <div class="container">
     <a class="navbar-brand fw-semibold" href="?lang=<?= $lang ?>"><?= h($T['title']) ?></a>
     <div class="small">
+      <a href="nr.php?lang=<?= $lang ?>" class="me-3">ChEMBL ↔ nr</a>
       <a href="?<?= h(http_build_query(array_merge($_GET, ['lang' => 'de']))) ?>" class="<?= $lang === 'de' ? 'fw-bold' : '' ?>">DE</a> ·
       <a href="?<?= h(http_build_query(array_merge($_GET, ['lang' => 'en']))) ?>" class="<?= $lang === 'en' ? 'fw-bold' : '' ?>">EN</a>
     </div>
