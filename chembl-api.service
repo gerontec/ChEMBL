@@ -1,0 +1,18 @@
+# Example systemd unit. Copy to /etc/systemd/system/, adjust User and WorkingDirectory, then
+#   systemctl daemon-reload && systemctl enable --now chembl-api
+[Unit]
+Description=ChEMBL local REST API (FastAPI/Swagger, compound <-> target)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+User=chembl
+Group=chembl
+WorkingDirectory=/opt/ChEMBL
+# Environment=CHEMBL_CNF_SECTION=chembl
+ExecStart=/usr/bin/python3 -m uvicorn chembl_api:app --host 0.0.0.0 --port 9099 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
