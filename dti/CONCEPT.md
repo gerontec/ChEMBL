@@ -134,3 +134,140 @@ next design would have to beat on the same blind test, not only the target-mean 
 A next trial (new criteria before the first result): classification active/inactive per target with negatives
 (measured inactives, `standard_relation = '>'`, plus decoys), ranking metric on held-out compounds, the similarity
 search and the ChEMBL multitask models as baselines.
+
+## Trial 2: ChEMBL's own multitask design (criteria fixed 2026-11-10, before the first result)
+
+Trial 1 failed because ChEMBL's pChEMBL rows are almost only actives, so a regression on pChEMBL learns the
+potency level of a target instead of the fit of a compound. Trial 2 changes exactly that one thing: **labels are
+active/inactive per target**, and inactive measurements are used as such.
+
+The design is taken from `github.com/chembl/chembl_multitask_model` (EMBL-EBI, MIT licence), which is the
+reference implementation of this approach. Our scripts are a re-implementation of its design against our own
+MariaDB copy of ChEMBL 37, not a run of its code: its pipeline reads a ChEMBL SQLite dump through SQLAlchemy and
+trains with PyTorch Lightning and PyTables. Numbers published for their models are therefore not a result of
+ours; where they differ, the difference may be ours.
+
+### Data (one change against upstream: human only)
+
+Same query as upstream (`activities` × `assays` × `target_dictionary` × `target_components` × `component_class` ×
+`protein_classification` × `molecule_dictionary` × `molecule_hierarchy` × `compound_structures`), same filters:
+
+- `standard_units = 'nM'`, `standard_type IN ('EC50','IC50','Ki','Kd','XC50','AC50','Potency')`
+- `data_validity_comment IS NULL`, `standard_relation IN ('=','<')`, `potential_duplicate = 0`
+- `assays.confidence_score >= 8` (the assay is assigned to a single protein with confidence)
+- `target_dictionary.target_type = 'SINGLE PROTEIN'`
+- **added: `target_dictionary.tax_id = 9606`** — the trial only looks for human targets
+- one row per (parent compound, target), the one with the lowest `standard_value`
+
+Labels (upstream `set_active`, thresholds in nM on `standard_value`):
+
+| target class | active | inactive |
+|---|---|---|
+| default | ≤ 1000 | > 1000 |
+| ion channel | ≤ 10000 | > 10000 |
+| protein kinase | ≤ 30 | > 30 |
+| nuclear receptor, 7TM receptor | ≤ 100 | > 100 |
+
+The class rules are applied in this order and the last matching one decides, so a target in several classes is
+labelled by the narrowest threshold — as upstream does it.
+
+A target is kept with **at least 100 active and 100 inactive compounds** and measurements from **at least two
+documents**. Everything else is dropped. The training matrix is compound × target and sparse: a pair that was
+never measured carries the label −1 and is masked out of the loss, it is not a negative.
+
+### Features and model (as upstream)
+
+Morgan fingerprint, radius 2, **1024 bits** (trial 1 used 2048 and an ESM-2 embedding of the protein; here the
+target is not a model input at all, it is an output head).
+
+`1024 → 2000` ReLU, dropout 0.25 → `100` ReLU → one `100 → 1` sigmoid head per target. One `BCELoss` per target,
+weighted by the inverse of the target's number of labels, missing labels masked out, the per-target losses summed.
+SGD, learning rate 4.0 (large because of that weighting), batch size 32, 3 epochs. Tesla P4, CUDA 11.8.
+
+### Evaluation
+
+- **held-out compounds**: 10 % of the compounds, drawn by compound, never seen in training. Metrics pooled over
+  all valid labels of those compounds: ROC AUC, MCC, accuracy, sensitivity, specificity, F1 (upstream's metrics).
+- **blind test, unchanged from trial 1**: scopolamine, atropine and hyoscyamine are forced into the held-out set,
+  so no close analogue of scopolamine is in training. Scopolamine is scored against all trained human targets and
+  the ranks of the five muscarinic acetylcholine receptors (M1–M5, CHEMBL216/211/245/1821/1836) are read off.
+- **baseline, new**: target fishing by similarity. A target's score for a compound is the highest Tanimoto
+  similarity between that compound and the target's active compounds in training (same fingerprints). This is the
+  method of SEA and SwissTargetPrediction in its simplest form, and it is the baseline the trial has to beat —
+  the target-mean baseline of trial 1 does not apply to classification.
+
+### Pass / fail (fixed before the first result)
+
+The trial passes only if **all** hold:
+
+1. held-out compounds: ROC AUC ≥ 0.85 and MCC ≥ 0.5
+2. blind test: at least three of the five muscarinic receptors among the **top 1 %** of the trained targets
+3. the blind test is at least as good as the Tanimoto baseline (same count in the top 1 %, or more)
+4. 1 to 3 hold again on a second run with another random seed
+
+Criterion 3 is the point of the trial: a model that cannot beat a similarity search has no use next to one.
+A pass on 1 and 2 but not 3 counts as failed and is recorded as such — the baseline then goes into the form
+instead of the model.
+
+### Measurements to record for every step
+
+Rows and time of the query, compounds, targets and labels after filtering, actives/inactives per target
+(median), fingerprint time, epochs and time per epoch, GPU utilisation, the metric table, the blind-test ranks
+of M1–M5 with the top of the list, the same ranks for the baseline. Written into this file as a results section,
+pass or fail.
+
+### Trial 2, run 1 (2026-11-10, seed 1) – failed; the baseline passed the blind test
+
+Steps and measurements (dell, Tesla P4, CUDA 11.8, env `iver`; log `DTI_DIR/mt_run.log`):
+
+| step | measured |
+|---|---|
+| data: query (human, confidence ≥ 8, SINGLE PROTEIN) | 2 621 238 rows, 2 025 581 compound/target pairs after keeping the lowest value per pair, 43 s |
+| data: target filter | 4 685 human targets measured, **643 kept** (≥ 100 active, ≥ 100 inactive, ≥ 2 documents) |
+| data: labels | 1 767 417 labels (719 360 active, 1 048 057 inactive), 1 008 934 compounds; median per target 597 active / 504 inactive |
+| data: SMILES | 1 007 469 compounds written, 83 s in total |
+| features: Morgan 1024 bit, r = 2 | 1 007 469 fingerprints, **0 unreadable SMILES**, 165 s (one CPU thread) |
+| split | 906 721 training compounds, 100 748 held-out compounds; the salt families of scopolamine, atropine and hyoscyamine (3 compounds with fingerprints) held out |
+| training | 3 epochs × 28 336 steps, **34 s per epoch** on the P4; loss 0.0119 → 0.0097 → 0.0088 |
+| blind test and baseline | 7 s / 12 s for three compounds against 643 targets |
+
+Held-out compounds, pooled over 175 871 valid labels (71 720 of them active):
+
+| AUC | MCC | accuracy | sensitivity | specificity | precision | F1 |
+|---:|---:|---:|---:|---:|---:|---:|
+| **0.909** | **0.660** | 0.837 | 0.779 | 0.876 | 0.812 | 0.796 |
+
+Blind test: the three compounds against all 643 trained targets, top 1 % = top 6. Ranks of the five muscarinic
+acetylcholine receptors (M1 CHEMBL216, M2 CHEMBL211, M3 CHEMBL245, M4 CHEMBL1821, M5 CHEMBL2035, all five are
+among the 643):
+
+| | scopolamine | atropine | hyoscyamine |
+|---|---|---|---|
+| multitask model | 83, 94, 100, 106, 142 → **0 of 5** | 58, 64, 76, 98, 135 → 0 of 5 | 58, 64, 76, 98, 135 → 0 of 5 |
+| baseline (highest Tanimoto to a target's training actives) | **1, 3, 6, 7, 8 → 3 of 5** | 1, 2, 3, 4, 7 → 4 of 5 | 1, 2, 3, 4, 7 → 4 of 5 |
+
+Against the criteria:
+
+1. held-out compounds: AUC 0.909 (required ≥ 0.85), MCC 0.660 (required ≥ 0.5) – **met**
+2. blind test: 0 of 5 muscarinic receptors in the top 6 – **missed**
+3. at least as good as the Tanimoto baseline: the baseline has 3 of 5 in the top 6, the model 0 – **missed clearly**
+4. second seed: not run, 2 and 3 already failed
+
+**The trial has failed, and it failed in the way the criteria were written to catch.** The model is good at the
+question "is this compound active on that target" when it is asked about one pair at a time (AUC 0.91 on
+compounds it has never seen), and it is poor at the question the project actually has: "which of the 643 targets
+belong to this compound". Per-pair quality and per-compound ranking are not the same measurement, and only the
+second one is useful at the form.
+
+Why: the per-target heads are trained independently and each one is calibrated to its own target. A target with
+many potent, easy ligands produces high probabilities for almost any molecule, so the top of a per-compound
+ranking is filled with such targets regardless of the molecule — the same effect that made trial 1 fail, now in
+classification instead of regression. Trial 1 was wrong about the cause: adding inactives fixed the per-pair
+score (trial 1's held-out r came from the target mean; here AUC 0.91 is real) but not the ranking across targets.
+A ranking loss across the targets of one compound, or a calibration per compound, would be the next thing to
+change — not more data.
+
+**What is used instead**: the Tanimoto target fishing of the baseline. It needs no training, it is the method of
+SEA and SwissTargetPrediction, and on this blind test it puts the right receptor family at ranks 1, 3 and 6 for a
+compound whose whole salt family was removed from its reference set. Scores and ranks of trial 2 stay in this
+file as the measurement it has to be compared against when it is put into the form.
