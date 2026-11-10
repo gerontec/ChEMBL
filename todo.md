@@ -29,18 +29,25 @@ bridge all 40 were missing).
 - [ ] count how many of the 12 912 target accessions resolve to an nr entry now against before the bridge
 - [ ] the file is not refreshed anywhere: either a cron entry or a note that the table ages
 
-## 3. Next field trial: ChEMBL's own multitask model
+## 3. Target prediction: trial 2 is measured, the baseline won
 
-Our own model failed (`dti/CONCEPT.md`, run 1). The ChEMBL multitask target-prediction model
-(`github.com/chembl/chembl_multitask_model`, MIT) trains **with inactive compounds** (at least 100 active and 100
-inactive per target), which is exactly what our run lacked.
+Done on 2026-11-10 (`dti/CONCEPT.md`, section Trial 2, and `dti/mt_test.py`): the multitask design with actives
+and inactives was trained on our ChEMBL 37 (643 human targets, 1.77 M labels, 1.0 M compounds, 34 s per epoch on
+the P4) and measured with the same scopolamine blind test. It reaches AUC 0.909 / MCC 0.660 per pair on compounds
+it has never seen, and it fails the blind test: the five muscarinic receptors land at ranks 83–142 of 643, while
+the Tanimoto similarity baseline puts them at 1, 3, 6, 7, 8. Criteria 2 and 3 missed, the trial counts as failed.
 
-- [ ] train it on the local ChEMBL 37 (its scripts document ChEMBL 36) and measure it with the **same blind test**
-      (scopolamine, ranks of the five muscarinic receptors among all human targets)
-- [ ] write the pass/fail criteria into a new section of `dti/CONCEPT.md` **before** the first result
-- [ ] second baseline: nearest neighbours by Tanimoto among the measured ligands per target
-- [ ] only if it passes: show predictions in the form and the API, separated from measured data
-      (`predicted_pchembl`), never inside the evidence layer `x_mech_evidence`
+- [ ] put the **Tanimoto target fishing** into the form and the API, since that is what passed: for a pasted
+      SMILES, the highest similarity to each target's actives, shown with the similarity and the compound it came
+      from, separated from measured data and never inside `x_mech_evidence`
+- [ ] it costs about 0.15 s per compound against the 906 721 reference fingerprints on one CPU thread; decide
+      whether that runs per query (needed anyway for compounds that are not in ChEMBL) or whether the 1.0 M
+      ChEMBL compounds get a precomputed table as a cache
+- [ ] the mapping covers **643 of the 12 912 target accessions** ChEMBL knows: only targets with at least 100
+      active and 100 inactive compounds. Say so in the form, it is not a mapping of all human proteins
+- [ ] only if a next trial beats the baseline on the same blind test: a ranking loss across the targets of one
+      compound, or a per-compound calibration — the per-target heads are each calibrated to their own target,
+      which is why the ranking across targets fails
 
 ## 4. Further sources for toxins (checked 2026-11-10)
 
