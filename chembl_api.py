@@ -11,15 +11,21 @@ Docs: http://<host>:9099/docs
 """
 
 import ipaddress
+import json
 import os
+import re
+import secrets
 import threading
 import time
-from typing import Optional
+from typing import Dict, List, Literal, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 
 import chembl
+import chembl_jobs
 
 try:
     import redis
@@ -38,6 +44,15 @@ except ImportError:          # optional: without redis the rate limit is per wor
 def _nets(var):
     return [ipaddress.ip_network(n.strip(), strict=False) for n in os.environ.get(var, "").split(",") if n.strip()]
 
+
+#   CHEMBL_JOB_MAX_NAMES       names per batch job                     (default 5000)
+#   CHEMBL_JOB_PER_IP_DAY      jobs per client address and 24 h        (default 20)
+#   CHEMBL_JOB_PER_EMAIL_DAY   jobs per mail address and 24 h          (default 20)
+#   CHEMBL_JOB_MAX_QUEUED      queued jobs in total                    (default 100)
+JOB_MAX_NAMES = int(os.environ.get("CHEMBL_JOB_MAX_NAMES", "5000"))
+JOB_PER_IP_DAY = int(os.environ.get("CHEMBL_JOB_PER_IP_DAY", "20"))
+JOB_PER_EMAIL_DAY = int(os.environ.get("CHEMBL_JOB_PER_EMAIL_DAY", "20"))
+JOB_MAX_QUEUED = int(os.environ.get("CHEMBL_JOB_MAX_QUEUED", "100"))
 
 ALLOW = _nets("CHEMBL_ALLOW")
 TRUSTED_PROXIES = _nets("CHEMBL_TRUSTED_PROXIES")
@@ -101,21 +116,34 @@ app = FastAPI(
 )
 
 
+def client_ip(request):
+    """Real client: last X-Forwarded-For entry when the peer is a trusted proxy, else the peer."""
+    peer = request.client.host if request.client else ""
+    if _in(peer, TRUSTED_PROXIES):
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[-1].strip()      # the proxy appends the address it saw last
+    return peer
+
+
 @app.middleware("http")
 async def guard(request: Request, call_next):
     peer = request.client.host if request.client else ""
     if ALLOW and not _in(peer, ALLOW):
         return JSONResponse({"detail": "forbidden"}, status_code=403)
-    if RATE_PER_MIN and _in(peer, TRUSTED_PROXIES):
-        fwd = request.headers.get("x-forwarded-for", "")
-        client = fwd.split(",")[-1].strip() if fwd else peer    # the proxy appends the real client last
-        if _over_limit(client):
-            return JSONResponse({"detail": f"rate limit {RATE_PER_MIN} requests per minute"},
-                                status_code=429, headers={"Retry-After": "60"})
+    if RATE_PER_MIN and _in(peer, TRUSTED_PROXIES) and _over_limit(client_ip(request)):
+        return JSONResponse({"detail": f"rate limit {RATE_PER_MIN} requests per minute; "
+                                       "use POST /jobs for large batches"},
+                            status_code=429, headers={"Retry-After": "60"})
     response = await call_next(request)
-    if CACHE_MAX_AGE and request.method == "GET" and response.status_code == 200:
+    if request.url.path.startswith("/jobs"):
+        response.headers["Cache-Control"] = "no-store"
+    elif CACHE_MAX_AGE and request.method == "GET" and response.status_code == 200:
         response.headers.setdefault("Cache-Control", f"public, max-age={CACHE_MAX_AGE}")
     return response
+
+
+app.add_middleware(GZipMiddleware, minimum_size=2000)
 
 
 def db_cursor():
@@ -278,6 +306,100 @@ def disease_indications(disease: str,
     if not rows:
         raise HTTPException(404, {"error": f"no indication matching '{disease}%'"})
     return {"query": disease, "count": len(rows), "compounds": rows}
+
+
+# ------------------------------------------------------------------ jobs
+
+EMAIL_RE = re.compile(r"^[^@\s,;<>]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$")
+JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+class JobRequest(BaseModel):
+    endpoint: str = Field(..., examples=["/targets/{name}/candidates"],
+                          description="one of: " + ", ".join(chembl_jobs.ENDPOINTS))
+    names: List[str] = Field(..., min_length=1, examples=[["CHEMBL4523582", "CHEMBL4303835"]],
+                             description="values for {name}: compounds, targets or diseases")
+    params: Dict[str, Union[str, int, float, bool]] = Field(
+        default_factory=dict, examples=[{"levels": "ABCD"}],
+        description="query parameters of the endpoint; limit/offset are handled by the worker")
+    format: Literal["csv", "jsonl"] = "csv"
+    email: str = Field(..., examples=["you@example.org"], description="the download link is mailed here")
+
+
+def job_public(row):
+    out = {k: row[k] for k in ("job_id", "status", "created", "started", "finished", "endpoint", "format",
+                               "n_names", "n_done", "n_rows", "n_bytes", "n_errors", "error")}
+    out["status_url"] = f"/jobs/{row['job_id']}"
+    if row["status"] == "done":
+        out["result_url"] = f"/jobs/{row['job_id']}/result"
+    return out
+
+
+@app.post("/jobs", tags=["jobs"], status_code=202,
+          summary="Queue a batch job (one endpoint × many names), result by mail")
+def job_submit(job: JobRequest, request: Request, cur=Depends(db_cursor)):
+    """Runs `endpoint` for every entry of `names`, pages through all results (no 10 000 limit), writes one gzip
+    file (CSV or JSON Lines, first column `query`) and mails the download link. Jobs run one after another."""
+    if job.endpoint not in chembl_jobs.ENDPOINTS:
+        raise HTTPException(422, f"endpoint must be one of {list(chembl_jobs.ENDPOINTS)}")
+    names = [n.strip() for n in job.names if n and n.strip()]
+    if not names or len(names) > JOB_MAX_NAMES:
+        raise HTTPException(422, f"1 to {JOB_MAX_NAMES} names")
+    email = job.email.strip()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(422, "invalid email address")
+    params = {k: v for k, v in job.params.items() if k not in ("limit", "offset")}
+    ip = client_ip(request)
+    chembl_jobs.ensure_schema(cur)
+    n = chembl.q(cur, "SELECT SUM(status='queued') AS queued, "
+                      "SUM(client_ip=%s AND created > NOW() - INTERVAL 1 DAY) AS ip_day, "
+                      "SUM(email=%s AND created > NOW() - INTERVAL 1 DAY) AS email_day FROM x_job", (ip, email))[0]
+    if (n["queued"] or 0) >= JOB_MAX_QUEUED:
+        raise HTTPException(503, "queue full, try again later", headers={"Retry-After": "600"})
+    if (n["ip_day"] or 0) >= JOB_PER_IP_DAY or (n["email_day"] or 0) >= JOB_PER_EMAIL_DAY:
+        raise HTTPException(429, f"at most {JOB_PER_IP_DAY} jobs per address and day")
+    job_id = secrets.token_hex(16)
+    cur.execute("INSERT INTO x_job (job_id, email, client_ip, endpoint, names, params, format, n_names) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (job_id, email, ip, job.endpoint, json.dumps(names), json.dumps(params), job.format, len(names)))
+    cur.connection.commit()
+    pos = chembl.q(cur, "SELECT COUNT(*) AS n FROM x_job WHERE status IN ('queued','running') "
+                        "AND created <= (SELECT created FROM x_job WHERE job_id = %s)", (job_id,))[0]["n"]
+    return {"job_id": job_id, "status": "queued", "queue_position": pos, "status_url": f"/jobs/{job_id}",
+            "note": "keep the job_id: it is the only key to the result"}
+
+
+def _job(cur, job_id):
+    if not JOB_ID_RE.match(job_id):
+        raise HTTPException(404, "no such job")
+    chembl_jobs.ensure_schema(cur)
+    rows = chembl.q(cur, "SELECT * FROM x_job WHERE job_id = %s", (job_id,))
+    if not rows:
+        raise HTTPException(404, "no such job")
+    return rows[0]
+
+
+@app.get("/jobs/{job_id}", tags=["jobs"], summary="Status of a batch job")
+def job_status(job_id: str, cur=Depends(db_cursor)):
+    row = _job(cur, job_id)
+    out = job_public(row)
+    if row["status"] == "queued":
+        out["queue_position"] = chembl.q(cur, "SELECT COUNT(*) AS n FROM x_job WHERE status IN ('queued','running') "
+                                              "AND created <= %s", (row["created"],))[0]["n"]
+    return out
+
+
+@app.get("/jobs/{job_id}/result", tags=["jobs"], summary="Download the result file (gzip)")
+def job_result(job_id: str, cur=Depends(db_cursor)):
+    row = _job(cur, job_id)
+    if row["status"] != "done":
+        raise HTTPException(409, f"job is {row['status']}")
+    path = chembl_jobs.result_path(job_id, row["format"])
+    if not os.path.exists(path):
+        raise HTTPException(410, "result expired")
+    # Content-Encoding identity keeps GZipMiddleware from compressing the .gz file a second time
+    return FileResponse(path, media_type="application/gzip", filename=os.path.basename(path),
+                        headers={"Content-Encoding": "identity"})
 
 
 # --------------------------------------------------------------- targets

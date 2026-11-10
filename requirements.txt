@@ -1,3 +1,5 @@
 pymysql>=1.0
 fastapi>=0.100
 uvicorn>=0.23
+httpx>=0.24      # fastapi.testclient, used by the batch job worker
+# redis>=4       # optional: rate limit shared by all API workers

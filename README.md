@@ -7,9 +7,13 @@ compound–target pair that has measured activity data.
 * `chembl.py`: all SQL, plus a CLI. Compound → targets, target → compounds, disease → compounds, evidence levels.
 * `chembl_api.py`: REST API on top of `chembl.py`, Swagger UI at `/docs`.
 * `chembl_mech_build.py`: builds the table `x_mech_candidates` and the view `x_mech_evidence` (stage 1 of the extension).
-* `chembl-api.service`: example systemd unit.
+* `chembl_jobs.py`: batch job worker for large queries; the result file is announced by mail.
+* `chembl-api.service`, `chembl-jobs.service`: example systemd units.
 
 Tested with ChEMBL 37 on MariaDB 11.8. ChEMBL data itself is not part of this repository.
+
+**Public instance:** <https://chembl.heissa.de/docs> (ChEMBL 37). Interactive requests are limited to
+120 per minute and client; use [batch jobs](#batch-jobs-large-queries-result-by-mail) for anything bigger.
 
 ## Why the extension
 
@@ -137,7 +141,7 @@ phase 3). Trial outcomes are not recorded there.
 ## Setup
 
 ```
-pip install --user -r requirements.txt          # pymysql, fastapi, uvicorn
+pip install --user -r requirements.txt          # pymysql, fastapi, uvicorn, httpx (redis optional)
 ```
 
 Credentials are read from a my.cnf file (`host`, `port`, `user`, `password`). The schema name is `chembl`.
@@ -198,10 +202,134 @@ Swagger UI: `http://<host>:9099/docs`
 | `GET /targets/{name}/mechanisms` | drugs with a curated mechanism on the target |
 | `GET /targets/{name}/candidates?levels=` | every compound with evidence level |
 | `GET /indications/{disease}` | all compounds that reached a trial for a disease (EFO/MeSH prefix) |
+| `POST /jobs` | queue a batch job, see below |
+| `GET /jobs/{job_id}` | job status |
+| `GET /jobs/{job_id}/result` | download the job result (gzip) |
 | `GET /version` | ChEMBL release |
 
 Example timings on a desktop server (ChEMBL 37): target → 12 000 compounds 0.7 s, evidence queries
-0.01–0.1 s, `/indications/COVID-19` 0.1 s.
+0.01–0.1 s, `/indications/COVID-19` 0.1 s. Responses are gzip-compressed when the client accepts it.
+
+## Batch jobs (large queries, result by mail)
+
+The interactive API returns at most 10 000 rows per request and allows 120 requests per minute. For
+"monster" queries (hundreds of targets or compounds, millions of rows) put a job into the queue instead.
+The server then
+
+1. runs one endpoint for every name in your list, one name after another,
+2. pages through every result on its own (no 10 000 limit, up to 5 million rows per job),
+3. writes one gzip file, CSV or JSON Lines, with an extra first column `query` (the name the row
+   belongs to). Names that cannot be resolved are listed as `# error:` lines at the end of the CSV,
+   or as `{"query": null, "error": …}` in JSON Lines,
+4. sends a mail from `chembl@heissa.de` with the download link to the address you gave.
+
+Jobs run one after another. Results are kept for 7 days. The `job_id` is the only key to the result,
+so keep it private.
+
+### Endpoints a job can run
+
+| `endpoint` | `names` are | one row per |
+|---|---|---|
+| `/compounds/{name}/targets` | compounds | measured target |
+| `/compounds/{name}/candidates` | compounds | target with evidence level |
+| `/compounds/{name}/mechanisms` | compounds | curated mechanism |
+| `/compounds/{name}/activities` | compounds (needs `params.target`) | single activity record |
+| `/compounds/{name}/indications` | compounds | indication |
+| `/targets/{name}/compounds` | targets | measured compound |
+| `/targets/{name}/candidates` | targets | compound with evidence level |
+| `/targets/{name}/mechanisms` | targets | curated drug |
+| `/indications/{name}` | diseases | compound in a clinical trial |
+
+`params` takes the query parameters of the endpoint as listed in [Swagger](https://chembl.heissa.de/docs),
+e.g. `{"levels": "ABCD"}`, `{"organism": "Homo sapiens", "min_phase": 4}`. `limit` and `offset` are
+ignored, the worker pages by itself.
+
+### 1. Submit
+
+```
+curl -s -X POST https://chembl.heissa.de/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "endpoint": "/targets/{name}/candidates",
+        "names":    ["CHEMBL4523582", "CHEMBL4303835", "CHEMBL4662936"],
+        "params":   {"levels": "ABCDP"},
+        "format":   "csv",
+        "email":    "you@example.org"
+      }'
+```
+
+```
+{"job_id": "cedff819012bbb131421f3d9f1014bf7", "status": "queued", "queue_position": 1,
+ "status_url": "/jobs/cedff819012bbb131421f3d9f1014bf7", "note": "keep the job_id: …"}
+```
+
+### 2. Wait for the mail, or poll
+
+```
+curl -s https://chembl.heissa.de/jobs/cedff819012bbb131421f3d9f1014bf7
+```
+
+`status` goes `queued` → `running` (with `n_done` of `n_names` and `n_rows` so far) → `done` or `failed`.
+
+### 3. Download
+
+```
+curl -s -o result.csv.gz https://chembl.heissa.de/jobs/cedff819012bbb131421f3d9f1014bf7/result
+zcat result.csv.gz | head
+```
+
+### The same in Python
+
+```python
+import time, requests
+
+base = "https://chembl.heissa.de"
+names = [l.strip() for l in open("targets.txt") if l.strip()]   # e.g. 500 target ChEMBL IDs or gene symbols
+
+job = requests.post(f"{base}/jobs", json={
+    "endpoint": "/targets/{name}/candidates",
+    "names": names,
+    "params": {"levels": "ABC", "named": True},
+    "format": "jsonl",
+    "email": "you@example.org",
+}).json()
+
+while (s := requests.get(f"{base}/jobs/{job['job_id']}").json())["status"] in ("queued", "running"):
+    print(s["status"], s.get("n_done"), "/", s["n_names"], "names,", s.get("n_rows"), "rows")
+    time.sleep(30)
+
+if s["status"] == "done":
+    open("result.jsonl.gz", "wb").write(requests.get(base + s["result_url"]).content)
+```
+
+### Limits
+
+| | default | environment variable |
+|---|---|---|
+| names per job | 5 000 | `CHEMBL_JOB_MAX_NAMES` |
+| rows per job | 5 000 000 | `CHEMBL_JOB_MAX_ROWS` |
+| jobs per client address and 24 h | 20 | `CHEMBL_JOB_PER_IP_DAY` |
+| jobs per mail address and 24 h | 20 | `CHEMBL_JOB_PER_EMAIL_DAY` |
+| queued jobs in total | 100 | `CHEMBL_JOB_MAX_QUEUED` |
+| result kept | 7 days | `CHEMBL_JOB_KEEP_DAYS` |
+| SQL time per statement in a job | 900 s | `CHEMBL_JOB_STATEMENT_TIME` |
+
+## Running your own public instance
+
+The public instance is a reverse proxy (Apache, TLS, disk cache) in front of the API, which runs next to
+the database on another machine and is reached over a WireGuard tunnel. Only results cross the tunnel.
+
+| variable | purpose |
+|---|---|
+| `CHEMBL_ALLOW` | networks allowed to connect to the API at all (empty = everyone) |
+| `CHEMBL_TRUSTED_PROXIES` | reverse proxies whose `X-Forwarded-For` is used as client address |
+| `CHEMBL_RATE_PER_MIN` | requests per minute and client behind a trusted proxy (default 120, shared across workers through redis if available) |
+| `CHEMBL_MAX_STATEMENT_TIME` | SQL time per statement for interactive requests (default 30 s) |
+| `CHEMBL_CACHE_MAX_AGE` | `Cache-Control: max-age` of successful GET responses (default 86 400 s) |
+| `CHEMBL_JOB_DIR`, `CHEMBL_PUBLIC_URL`, `CHEMBL_MAIL_FROM`, `CHEMBL_SMTP_HOST` | batch jobs: result directory, base URL in mails, sender, SMTP relay |
+
+Apache needs `CacheIgnoreNoLastMod On` (the API sends no `Last-Modified`) and its own `CacheRoot` in the
+virtual host, otherwise nothing is cached.
 
 ## Roadmap
 

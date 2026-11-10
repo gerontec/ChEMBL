@@ -1,0 +1,20 @@
+# Example systemd unit for the batch job worker (chembl_jobs.py). One job at a time.
+# Share the settings with chembl-api.service through one EnvironmentFile.
+[Unit]
+Description=ChEMBL batch job worker (queue x_job, result file + mail)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+User=chembl
+Group=chembl
+WorkingDirectory=/opt/ChEMBL
+# EnvironmentFile=/etc/chembl.env
+ExecStart=/usr/bin/python3 /opt/ChEMBL/chembl_jobs.py
+Nice=5
+IOSchedulingClass=best-effort
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
