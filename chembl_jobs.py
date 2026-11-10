@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS x_job (
     started    DATETIME     NULL,
     finished   DATETIME     NULL,
     status     ENUM('queued','running','done','failed') NOT NULL DEFAULT 'queued',
-    email      VARCHAR(254) NOT NULL,
+    email      VARCHAR(254) NOT NULL DEFAULT '' COMMENT 'optional, empty = no mail',
     client_ip  VARCHAR(45)  NOT NULL,
     endpoint   VARCHAR(64)  NOT NULL,
     names      MEDIUMTEXT   NOT NULL COMMENT 'JSON list',
@@ -170,8 +170,8 @@ def run_job(client, job):
 # ------------------------------------------------------------------- mail
 
 def send_mail(job, cur):
-    if not SMTP_HOST:
-        return
+    if not SMTP_HOST or not job.get("email"):
+        return                                   # mail is optional; without it the client polls /jobs/{id}
     jid = job["job_id"]
     msg = EmailMessage()
     msg["From"], msg["To"], msg["Date"] = MAIL_FROM, job["email"], formatdate(localtime=True)

@@ -323,7 +323,9 @@ class JobRequest(BaseModel):
         default_factory=dict, examples=[{"levels": "ABCD"}],
         description="query parameters of the endpoint; limit/offset are handled by the worker")
     format: Literal["csv", "jsonl"] = "csv"
-    email: str = Field(..., examples=["you@example.org"], description="the download link is mailed here")
+    email: Optional[str] = Field(None, examples=["you@example.org"],
+                                 description="optional: the download link is mailed here; "
+                                             "without it, poll /jobs/{job_id}")
 
 
 def job_public(row):
@@ -345,15 +347,16 @@ def job_submit(job: JobRequest, request: Request, cur=Depends(db_cursor)):
     names = [n.strip() for n in job.names if n and n.strip()]
     if not names or len(names) > JOB_MAX_NAMES:
         raise HTTPException(422, f"1 to {JOB_MAX_NAMES} names")
-    email = job.email.strip()
-    if not EMAIL_RE.match(email):
+    email = (job.email or "").strip()
+    if email and not EMAIL_RE.match(email):
         raise HTTPException(422, "invalid email address")
     params = {k: v for k, v in job.params.items() if k not in ("limit", "offset")}
     ip = client_ip(request)
     chembl_jobs.ensure_schema(cur)
     n = chembl.q(cur, "SELECT SUM(status='queued') AS queued, "
                       "SUM(client_ip=%s AND created > NOW() - INTERVAL 1 DAY) AS ip_day, "
-                      "SUM(email=%s AND created > NOW() - INTERVAL 1 DAY) AS email_day FROM x_job", (ip, email))[0]
+                      "SUM(email<>'' AND email=%s AND created > NOW() - INTERVAL 1 DAY) AS email_day FROM x_job",
+                 (ip, email))[0]
     if (n["queued"] or 0) >= JOB_MAX_QUEUED:
         raise HTTPException(503, "queue full, try again later", headers={"Retry-After": "600"})
     if (n["ip_day"] or 0) >= JOB_PER_IP_DAY or (n["email_day"] or 0) >= JOB_PER_EMAIL_DAY:
