@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 import chembl
 import chembl_jobs
+import nr_join
 
 try:
     import redis
@@ -112,7 +113,10 @@ app = FastAPI(
         "narrow with `organism=Homo sapiens`.\n"
         "* `pchembl` = −log10(molar IC50/EC50/Ki/Kd…); 6 = 1 µM, 9 = 1 nM. "
         "`max_phase` 4 = approved drug. `conf` = ChEMBL assay confidence score (9 = direct single protein).\n"
-        "* Target `CHEMBL612545` 'Unchecked' collects assays without a target assignment."
+        "* Target `CHEMBL612545` 'Unchecked' collects assays without a target assignment.\n"
+        "* **ChEMBL ↔ NCBI nr** (`/nr/...`): targets with their nr protein entries (UniProt accession), organisms "
+        "with an identical sequence, links to a DIAMOND homolog search; reverse: an nr accession → ChEMBL targets "
+        "and compounds."
     ),
 )
 
@@ -353,6 +357,48 @@ def compound_indications(name: str, exact: bool = False, cur=Depends(db_cursor))
 
 
 # ----------------------------------------------------------- indications
+
+def nr_cursor(cur=Depends(db_cursor)):
+    if not nr_join.available(cur):
+        raise HTTPException(503, {"error": "the NCBI nr tables are not available on this server"})
+    return cur
+
+
+@app.get("/nr/compounds/{name}", tags=["nr"],
+         summary="Compound → targets → their NCBI nr protein entries (plus the compound's own sequence, if any)")
+def nr_compound(name: str,
+                human: bool = Query(False, description="only Homo sapiens targets"),
+                limit: int = Query(50, ge=1, le=500, description="max. activity targets (curated ones always)"),
+                exact: bool = False, cur=Depends(nr_cursor)):
+    molregnos = compound_molregnos(cur, name, exact)
+    return {"query": name, "forms": compound_forms(cur, molregnos),
+            "sequences": nr_join.compound_sequences(cur, molregnos),
+            "targets": nr_join.compound_nr(cur, molregnos, human, limit)}
+
+
+@app.get("/nr/targets/{name}", tags=["nr"],
+         summary="Target → its protein components → their NCBI nr entries")
+def nr_target(name: str, organism: Optional[str] = None,
+              all_types: bool = Query(False, description="also complexes/families containing the gene"),
+              cur=Depends(nr_cursor)):
+    return {"query": name, "targets": nr_join.target_nr(cur, target_rows(cur, name, organism, all_types))}
+
+
+@app.get("/nr/proteins/{acc}", tags=["nr"],
+         summary="NCBI nr accession → ChEMBL targets with an identical sequence → drugs and active compounds")
+def nr_protein(acc: str, limit: int = Query(200, ge=1, le=2000, description="max. active compounds"),
+               cur=Depends(nr_cursor)):
+    r = nr_join.protein_chembl(cur, acc.strip(), limit)
+    if r is None:
+        raise HTTPException(404, {"error": f"accession '{acc}' not in nr"})
+    return {"query": acc, **r}
+
+
+@app.get("/nr/organisms/{oid}", tags=["nr"],
+         summary="Organisms whose nr entries have exactly this sequence (nr OID)")
+def nr_organisms(oid: int, limit: int = Query(500, ge=1, le=5000), cur=Depends(nr_cursor)):
+    return {"oid": oid, "organisms": nr_join.organisms(cur, oid, limit)}
+
 
 @app.get("/indications/{disease}", tags=["indications"],
          summary="Disease → all compounds that reached a clinical trial for it (any outcome)")
