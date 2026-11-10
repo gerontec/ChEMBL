@@ -10,7 +10,12 @@ User=chembl
 Group=chembl
 WorkingDirectory=/opt/ChEMBL
 # Environment=CHEMBL_CNF_SECTION=chembl
-ExecStart=/usr/bin/python3 -m uvicorn chembl_api:app --host 0.0.0.0 --port 9099 --workers 2
+# Only these networks may connect; put the public reverse proxy into both lists.
+# Environment=CHEMBL_ALLOW=127.0.0.0/8,::1/128,192.168.0.0/16,fd00::/8,203.0.113.10/32
+# Environment=CHEMBL_TRUSTED_PROXIES=203.0.113.10/32
+# Environment=CHEMBL_RATE_PER_MIN=120
+# Environment=CHEMBL_MAX_STATEMENT_TIME=30
+ExecStart=/usr/bin/python3 -m uvicorn chembl_api:app --host :: --port 9099 --workers 8
 Restart=always
 RestartSec=5
 

@@ -10,11 +10,79 @@ Run:  python3 -m uvicorn chembl_api:app --host 0.0.0.0 --port 9099   (see chembl
 Docs: http://<host>:9099/docs
 """
 
+import ipaddress
+import os
+import threading
+import time
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 import chembl
+
+try:
+    import redis
+except ImportError:          # optional: without redis the rate limit is per worker process
+    redis = None
+
+
+# ---------------------------------------------------------------- settings (environment)
+#   CHEMBL_ALLOW               networks allowed to connect at all, comma separated (empty = everyone)
+#   CHEMBL_TRUSTED_PROXIES     reverse proxies whose X-Forwarded-For is used as client address
+#   CHEMBL_RATE_PER_MIN        requests per minute and client behind a trusted proxy (0 = off)
+#   CHEMBL_MAX_STATEMENT_TIME  seconds per SQL statement (MariaDB max_statement_time, 0 = off)
+#   CHEMBL_CACHE_MAX_AGE       Cache-Control max-age for successful GET responses (0 = no header)
+#   CHEMBL_REDIS_URL           redis for a rate limit shared by all workers (default redis://127.0.0.1:6379/0)
+
+def _nets(var):
+    return [ipaddress.ip_network(n.strip(), strict=False) for n in os.environ.get(var, "").split(",") if n.strip()]
+
+
+ALLOW = _nets("CHEMBL_ALLOW")
+TRUSTED_PROXIES = _nets("CHEMBL_TRUSTED_PROXIES")
+RATE_PER_MIN = int(os.environ.get("CHEMBL_RATE_PER_MIN", "120"))
+MAX_STATEMENT_TIME = float(os.environ.get("CHEMBL_MAX_STATEMENT_TIME", "30"))
+CACHE_MAX_AGE = int(os.environ.get("CHEMBL_CACHE_MAX_AGE", "86400"))
+
+_redis = None
+if redis is not None and RATE_PER_MIN:
+    try:
+        _redis = redis.Redis.from_url(os.environ.get("CHEMBL_REDIS_URL", "redis://127.0.0.1:6379/0"),
+                                      socket_timeout=0.5, socket_connect_timeout=0.5)
+        _redis.ping()
+    except Exception:
+        _redis = None
+_local_hits, _local_lock = {}, threading.Lock()
+
+
+def _in(addr, nets):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return any(ip in n for n in nets)
+
+
+def _over_limit(client):
+    """Fixed one-minute window per client. True if the client exceeded RATE_PER_MIN."""
+    window = int(time.time() // 60)
+    key = f"chembl:rl:{client}:{window}"
+    if _redis is not None:
+        try:
+            pipe = _redis.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, 120)
+            return pipe.execute()[0] > RATE_PER_MIN
+        except Exception:
+            pass                                    # redis gone: fall back to the local counter
+    with _local_lock:
+        for k in [k for k in _local_hits if not k.endswith(f":{window}")]:
+            del _local_hits[k]
+        _local_hits[key] = _local_hits.get(key, 0) + 1
+        return _local_hits[key] > RATE_PER_MIN
 
 app = FastAPI(
     title="ChEMBL local API",
@@ -33,10 +101,30 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    peer = request.client.host if request.client else ""
+    if ALLOW and not _in(peer, ALLOW):
+        return JSONResponse({"detail": "forbidden"}, status_code=403)
+    if RATE_PER_MIN and _in(peer, TRUSTED_PROXIES):
+        fwd = request.headers.get("x-forwarded-for", "")
+        client = fwd.split(",")[-1].strip() if fwd else peer    # the proxy appends the real client last
+        if _over_limit(client):
+            return JSONResponse({"detail": f"rate limit {RATE_PER_MIN} requests per minute"},
+                                status_code=429, headers={"Retry-After": "60"})
+    response = await call_next(request)
+    if CACHE_MAX_AGE and request.method == "GET" and response.status_code == 200:
+        response.headers.setdefault("Cache-Control", f"public, max-age={CACHE_MAX_AGE}")
+    return response
+
+
 def db_cursor():
     conn = chembl.connect()
     try:
-        yield conn.cursor()
+        cur = conn.cursor()
+        if MAX_STATEMENT_TIME:
+            cur.execute("SET SESSION max_statement_time = %s", (MAX_STATEMENT_TIME,))
+        yield cur
     finally:
         conn.close()
 
