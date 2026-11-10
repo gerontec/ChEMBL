@@ -1,16 +1,15 @@
 # ChEMBL query service
 
-Ad-hoc queries against ChEMBL in both directions (compound → targets, target → compounds, disease →
-compounds) as a REST API with Swagger UI and as a command line tool, plus an **evidence layer** that
-extends ChEMBL's curated `drug_mechanism` table with every compound–target pair that has measured
-activity data.
-
-**Public instance:** <https://chembl.heissa.de/docs> (ChEMBL 37). No account, no key.
-
 ## Quick start: ad-hoc queries
 
-Every query is a plain HTTP GET and answers within a second. Try them in the browser, in
-[Swagger](https://chembl.heissa.de/docs) or with curl:
+Open **<https://chembl.heissa.de/docs>**, pick an endpoint, *Try it out*, *Execute*. No account, no key,
+no mail. Or paste a link into the browser:
+
+* <https://chembl.heissa.de/compounds/ivermectin/candidates>: everything ivermectin acts on, with evidence level
+* <https://chembl.heissa.de/targets/ABCB1/compounds?organism=Homo%20sapiens&limit=50>: everything measured on P-glycoprotein
+* <https://chembl.heissa.de/indications/COVID-19>: every compound that reached a COVID-19 trial
+
+Every query is a plain HTTP GET and answers within about a second. With curl:
 
 ```
 # compound -> every target with evidence level (A curated, B/C/D measured, P phenotypic)
@@ -50,6 +49,14 @@ for t in r.json()["candidates"]:
 
 All endpoints are listed in [REST API](#rest-api) below and documented in Swagger.
 
+## What this is
+
+Ad-hoc queries against ChEMBL in both directions (compound → targets, target → compounds, disease →
+compounds) as a REST API with Swagger UI and as a command line tool, plus an **evidence layer** that
+extends ChEMBL's curated `drug_mechanism` table with every compound–target pair that has measured
+activity data ([why](#why-the-extension)). Public instance: ChEMBL 37. For very large queries there
+are [batch jobs](#large-queries-batch-jobs).
+
 ## Large queries: batch jobs
 
 The interactive API returns at most 10 000 rows per request and allows 120 requests per minute. For
@@ -58,9 +65,13 @@ This is an option for large jobs only; everything else is answered ad hoc. The s
 
 1. runs one endpoint for every name in your list, one name after another,
 2. pages through every result on its own (no 10 000 limit, up to 5 million rows per job),
-3. writes one gzip file, CSV or JSON Lines, with an extra first column `query` (the name the row
-   belongs to). Names that cannot be resolved are listed as `# error:` lines at the end of the CSV,
-   or as `{"query": null, "error": …}` in JSON Lines,
+3. writes one file that opens on a plain Windows PC, with an extra first column `query` (the name the
+   row belongs to):
+   * `xlsx` (default): opens in Excel by double click, numbers stay numbers. Sheets `info` (query,
+     parameters, ChEMBL release, legend of the evidence levels), `results` (continued in `results 2`, …
+     above 1 048 575 rows) and `errors` (names that could not be resolved).
+   * `csv`: zip with the CSV (UTF-8 with BOM, comma separated), `info.txt` and `errors.txt`.
+   * `jsonl`: zip with JSON Lines, `info.txt` and `errors.txt`.
 4. if you gave an `email` (optional), sends a mail from `chembl@heissa.de` with the download link.
    Without `email` you poll the status and download the file yourself.
 
@@ -94,7 +105,7 @@ curl -s -X POST https://chembl.heissa.de/jobs \
         "endpoint": "/targets/{name}/candidates",
         "names":    ["CHEMBL4523582", "CHEMBL4303835", "CHEMBL4662936"],
         "params":   {"levels": "ABCDP"},
-        "format":   "csv"
+        "format":   "xlsx"
       }'
 # optional: "email": "you@example.org"  -> download link by mail when the job is done
 ```
@@ -115,9 +126,11 @@ curl -s https://chembl.heissa.de/jobs/cedff819012bbb131421f3d9f1014bf7
 ### 3. Download
 
 ```
-curl -s -o result.csv.gz https://chembl.heissa.de/jobs/cedff819012bbb131421f3d9f1014bf7/result
-zcat result.csv.gz | head
+curl -s -OJ https://chembl.heissa.de/jobs/cedff819012bbb131421f3d9f1014bf7/result
+# -> chembl_job_cedff819.xlsx   (or .csv.zip / .jsonl.zip)
 ```
+
+Or simply open the link in the browser: it downloads the file, which opens in Excel.
 
 ### The same in Python
 
@@ -139,7 +152,7 @@ while (s := requests.get(f"{base}/jobs/{job['job_id']}").json())["status"] in ("
     time.sleep(30)
 
 if s["status"] == "done":
-    open("result.jsonl.gz", "wb").write(requests.get(base + s["result_url"]).content)
+    open("result.jsonl.zip", "wb").write(requests.get(base + s["result_url"]).content)
 ```
 
 ### Limits
@@ -302,7 +315,7 @@ Swagger UI: `http://<host>:9099/docs`
 | `GET /indications/{disease}` | all compounds that reached a trial for a disease (EFO/MeSH prefix) |
 | `POST /jobs` | queue a batch job, see below |
 | `GET /jobs/{job_id}` | job status |
-| `GET /jobs/{job_id}/result` | download the job result (gzip) |
+| `GET /jobs/{job_id}/result` | download the job result (xlsx, or zip for csv/jsonl) |
 | `GET /version` | ChEMBL release |
 
 Example timings on a desktop server (ChEMBL 37): target → 12 000 compounds 0.7 s, evidence queries
