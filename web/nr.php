@@ -30,7 +30,7 @@ $T = [
   'results' => 'Zielproteine', 'excel' => 'Excel-Datei', 'none' => 'Keine Treffer.',
   'own_seq' => 'Eigene Sequenz des Wirkstoffs (Peptid/Protein)',
   'col_evidence' => 'Beleg', 'col_target' => 'Zielprotein', 'col_organism' => 'Organismus', 'col_uniprot' => 'UniProt',
-  'col_nr' => 'nr-Eintrag', 'col_len' => 'Länge', 'col_ident' => 'identische Einträge', 'col_orgs' => 'Organismen',
+  'col_nr' => 'nr-Eintrag', 'via_refseq' => 'über RefSeq', 'col_len' => 'Länge', 'col_ident' => 'identische Einträge', 'col_orgs' => 'Organismen',
   'col_potency' => 'Wirkstärke (pChEMBL)', 'col_mech' => 'Wirkmechanismus', 'col_blast' => 'Verwandte suchen', 'col_id' => 'ChEMBL-ID',
   'col_compound' => 'Wirkstoff', 'col_phase' => 'Phase', 'col_seq' => 'Sequenz', 'col_desc' => 'Beschreibung',
   'ev_mechanism' => 'Mechanismus', 'ev_activity' => 'Messung', 'not_in_nr' => 'nicht in nr',
@@ -57,7 +57,7 @@ $T = [
   'results' => 'Target proteins', 'excel' => 'Excel file', 'none' => 'No results.',
   'own_seq' => 'Own sequence of the compound (peptide/protein)',
   'col_evidence' => 'Evidence', 'col_target' => 'Target', 'col_organism' => 'Organism', 'col_uniprot' => 'UniProt',
-  'col_nr' => 'nr entry', 'col_len' => 'Length', 'col_ident' => 'identical entries', 'col_orgs' => 'Organisms',
+  'col_nr' => 'nr entry', 'via_refseq' => 'via RefSeq', 'col_len' => 'Length', 'col_ident' => 'identical entries', 'col_orgs' => 'Organisms',
   'col_potency' => 'Potency (pChEMBL)', 'col_mech' => 'Mechanism', 'col_blast' => 'Find related', 'col_id' => 'ChEMBL ID',
   'col_compound' => 'Compound', 'col_phase' => 'Phase', 'col_seq' => 'Sequence', 'col_desc' => 'Description',
   'ev_mechanism' => 'mechanism', 'ev_activity' => 'measured', 'not_in_nr' => 'not in nr',
@@ -256,7 +256,7 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
             <?php if ($mode === 'compound'): ?><td><?= h($r['best_pchembl']) ?></td><?php endif; ?>
             <td class="small"><?= h($r['uniprot']) ?></td>
             <?php if ($r['in_nr']): ?>
-              <td class="small"><?= ncbi_link($r['nr_acc']) ?></td><td><?= h($r['length']) ?></td><td><?= h($r['identical_entries']) ?></td>
+              <td class="small"><?= ncbi_link($r['nr_acc']) ?><?php if (($r['via'] ?? 'uniprot') !== 'uniprot'): ?><br><span class="text-body-secondary"><?= h($T['via_refseq']) ?></span><?php endif; ?></td><td><?= h($r['length']) ?></td><td><?= h($r['identical_entries']) ?></td>
               <td><?= orgs_link($r['oid'], $r['organisms']) ?></td><td><?= blast_link($r['homolog_search'], $T) ?></td>
             <?php else: ?>
               <td class="small text-body-secondary" colspan="5"><?= h($T['not_in_nr']) ?></td>

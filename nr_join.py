@@ -3,7 +3,9 @@
 blast_seq, blast_taxon in schema CHEMBL_NR_DB on the same MariaDB server).
 
 The link is the UniProt accession: ChEMBL target components carry it (component_sequences.accession, no version),
-nr holds Swiss-Prot entries under the same accession with a version (P02766 -> P02766.1). One nr entry (OID) is one
+nr holds Swiss-Prot entries under the same accession with a version (P02766 -> P02766.1). A TrEMBL accession is
+not in nr at all; for those the RefSeq accession of the same protein is used instead (table x_uniprot_refseq,
+filled by nr_uniprot_map.py from NCBI gene_refseq_uniprotkb_collab), and the entry says so in 'via'. One nr entry (OID) is one
 distinct sequence; all its accessions (blast_acc rows of the OID) are identical sequences, often from many
 organisms. Homologs (similar, not identical) need a DIAMOND search: CHEMBL_BLAST_URL links to that form.
 
@@ -69,15 +71,42 @@ def compound_sequences(cur, molregnos):
     return rows
 
 
+def refseq_of(cur, uniprot_accs):
+    """{uniprot accession: [refseq accessions]} from x_uniprot_refseq; {} when the table is missing."""
+    accs = sorted(set(a for a in uniprot_accs if a))
+    if not accs:
+        return {}
+    try:
+        rows = chembl.q(cur, "SELECT uniprot, refseq FROM x_uniprot_refseq WHERE uniprot IN ("
+                        + ",".join(["%s"] * len(accs)) + ")", tuple(accs))
+    except Exception:                      # table not filled yet: the direct lookup still works
+        return {}
+    out = {}
+    for r in rows:
+        out.setdefault(r["uniprot"], []).append(r["refseq"])
+    return out
+
+
 def nr_entries(cur, uniprot_accs):
     """{uniprot accession: nr entry} for the accessions found in nr. Entry: nr_acc, oid, length, nr_title,
-    identical_entries (accessions of the same sequence), organisms (distinct taxa among them)."""
+    identical_entries (accessions of the same sequence), organisms (distinct taxa among them), via ('uniprot'
+    when the UniProt accession itself is in nr, else the RefSeq accession it was found through)."""
     out = {}
+    missing = []
     for u in sorted(set(a for a in uniprot_accs if a)):
         rows = chembl.q(cur, f"SELECT a.oid, a.acc FROM {NR_DB}.blast_acc a WHERE a.acc LIKE %s "
                              "ORDER BY a.acc DESC LIMIT 1", (like_prefix(u),))      # newest version first
         if rows:
-            out[u] = {"nr_acc": rows[0]["acc"], "oid": rows[0]["oid"]}
+            out[u] = {"nr_acc": rows[0]["acc"], "oid": rows[0]["oid"], "via": "uniprot"}
+        else:
+            missing.append(u)
+    for u, refs in refseq_of(cur, missing).items():      # TrEMBL and the like: the same protein as a RefSeq entry
+        for r in refs:
+            rows = chembl.q(cur, f"SELECT a.oid, a.acc FROM {NR_DB}.blast_acc a WHERE a.acc LIKE %s "
+                                 "ORDER BY a.acc DESC LIMIT 1", (like_prefix(r),))
+            if rows:
+                out[u] = {"nr_acc": rows[0]["acc"], "oid": rows[0]["oid"], "via": r}
+                break
     oids = sorted({e["oid"] for e in out.values()})
     if not oids:
         return out
@@ -113,7 +142,7 @@ def _with_nr(cur, rows):
     """Add the nr entry of every row's UniProt accession (flat columns, None when not in nr)."""
     nr = nr_entries(cur, [r["uniprot"] for r in rows])
     empty = dict.fromkeys(("nr_acc", "oid", "length", "nr_title", "identical_entries", "organisms",
-                           "homolog_search"))
+                           "homolog_search", "via"))
     for r in rows:
         r.update(nr.get(r["uniprot"], empty))
         r["in_nr"] = r["uniprot"] in nr
