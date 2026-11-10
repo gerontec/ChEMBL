@@ -416,7 +416,11 @@ differ only by zero-width characters as equal and breaks the unique keys of the 
   (ignore `GET /assets/`), and `failregex = ^<HOST> -[^"]*"[^"]*" 429 `.
 
 The public instance is a reverse proxy (Apache, TLS, disk cache) in front of the API, which runs next to
-the database on another machine and is reached over a WireGuard tunnel. Only results cross the tunnel.
+the database on another machine, reached **directly over IPv6** (`ProxyPass /… http://<api-host>:9099/…`). Only
+results take that path. Until 2026-11-10 it went through a WireGuard tunnel to a VPS; that VPS was given up, so
+the proxy now addresses the API host by its own AAAA record. The API still decides for itself who may ask:
+`CHEMBL_ALLOW` holds the networks allowed to connect at all and `CHEMBL_TRUSTED_PROXIES` the proxy addresses
+whose `X-Forwarded-For` counts.
 
 | variable | purpose |
 |---|---|

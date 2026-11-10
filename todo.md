@@ -3,16 +3,20 @@
 Started on 2026-11-10 and not finished. Companion list in the nr repository:
 `github.com/gerontec/blastDiamond/todo.md` (the two services are joined by `nr_join.py`).
 
-## 1. Put the ChEMBL ↔ nr joins into service
+## 1. The ChEMBL ↔ nr joins are in service (2026-11-10)
 
-The code is committed and tested against a local test instance, but the public service still runs without it.
+Done and checked through the public URL: `CHEMBL_BLAST_URL=https://blast.heissa.de` in `/etc/chembl.env`,
+`chembl-api` restarted, `ProxyPass /nr` in the heissa vhost, `git pull` in `/opt/ChEMBL` for `nr.php`.
+`https://chembl.heissa.de/nr/compounds/scopolamine` answers with 42 targets, and `/openapi.json` lists the four
+`/nr/...` paths (21 paths in all), so Swagger and ReDoc describe them without any extra step.
 
-- [ ] `CHEMBL_BLAST_URL=https://blast.heissa.de` into `/etc/chembl.env`, then
-      `systemctl restart chembl-api` — without it the `/nr/...` answers carry no DIAMOND links
-- [ ] `ProxyPass /nr http://<api>:9099/nr` in the heissa vhost (the other paths are listed one by one there)
-- [ ] deploy `web/nr.php` and `web/index.php` to heissa (`git pull` in `/opt/ChEMBL`)
-- [ ] check the form through the public URL (the test instance ran on the database server, where PHP had no curl
-      extension until php-curl was installed on 2026-11-10)
+Two things that cost time and are worth knowing next time:
+
+- the Apache disk cache keeps `openapi.json` for a day (`Cache-Control: max-age=86400`), so the new paths were
+  invisible after the restart. The cache key is the **public** URL, not the backend one:
+  `sudo htcacheclean -v -p /var/cache/apache2/mod_cache_disk "https://chembl.heissa.de:443/openapi.json?"`
+- the proxy no longer goes through the WireGuard tunnel of the cancelled VPS but straight to the API host over
+  IPv6; see README, section on the public instance
 
 ## 2. UniProt → RefSeq bridge (`x_uniprot_refseq`)
 
