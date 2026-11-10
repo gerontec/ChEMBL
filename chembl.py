@@ -66,24 +66,26 @@ def q(cur, sql, args=None):
 
 def resolve(cur, name):
     """Return the molecule_dictionary rows matching a name, synonym or ChEMBL ID (exact, case-insensitive)."""
-    rows = q(cur, """
-        SELECT DISTINCT d.molregno, d.chembl_id, d.pref_name, d.max_phase, d.molecule_type
-        FROM molecule_dictionary d
-        LEFT JOIN molecule_synonyms s ON s.molregno = d.molregno
-        WHERE d.pref_name = %s OR d.chembl_id = %s OR s.synonyms = %s
+    # UNION in a derived table instead of OR / IN(subquery): every branch uses its own index
+    # (molecule_synonyms.synonyms needs x_idx_molsyn_synonyms from chembl_mech_build.py)
+    return q(cur, """
+        SELECT d.molregno, d.chembl_id, d.pref_name, d.max_phase, d.molecule_type
+        FROM (SELECT molregno FROM molecule_dictionary WHERE pref_name = %s
+              UNION SELECT molregno FROM molecule_dictionary WHERE chembl_id = %s
+              UNION SELECT molregno FROM molecule_synonyms WHERE synonyms = %s) u
+        JOIN molecule_dictionary d ON d.molregno = u.molregno
         ORDER BY d.max_phase DESC, d.molregno""", (name, name.upper(), name))
-    return rows
 
 
 def search(cur, prefix, limit=40):
     """Prefix search over names and synonyms, for --search."""
     return q(cur, """
-        SELECT DISTINCT d.molregno, d.chembl_id, d.pref_name, d.max_phase, d.molecule_type,
-               GROUP_CONCAT(DISTINCT s.synonyms ORDER BY s.synonyms SEPARATOR '; ') AS synonyms
-        FROM molecule_dictionary d
-        LEFT JOIN molecule_synonyms s ON s.molregno = d.molregno
-        WHERE d.pref_name LIKE %s OR s.synonyms LIKE %s
-        GROUP BY d.molregno
+        SELECT d.molregno, d.chembl_id, d.pref_name, d.max_phase, d.molecule_type,
+               (SELECT GROUP_CONCAT(DISTINCT s.synonyms ORDER BY s.synonyms SEPARATOR '; ')
+                FROM molecule_synonyms s WHERE s.molregno = d.molregno) AS synonyms
+        FROM (SELECT molregno FROM molecule_dictionary WHERE pref_name LIKE %s
+              UNION SELECT molregno FROM molecule_synonyms WHERE synonyms LIKE %s) u
+        JOIN molecule_dictionary d ON d.molregno = u.molregno
         ORDER BY d.max_phase DESC, d.pref_name
         LIMIT %s""", (prefix + "%", prefix + "%", limit))
 

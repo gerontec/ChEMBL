@@ -111,10 +111,28 @@ GROUP BY dm.molregno, dm.tid
 """
 
 
+# Indexes the ChEMBL dump lacks for name lookups (prefix x_ marks them as ours).
+EXTRA_INDEXES = [
+    ("molecule_synonyms", "x_idx_molsyn_synonyms", "synonyms"),
+    ("component_synonyms", "x_idx_compsyn_synonym", "component_synonym"),
+]
+
+
+def ensure_indexes(cur):
+    for table, name, cols in EXTRA_INDEXES:
+        cur.execute("SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() "
+                    "AND table_name = %s AND index_name = %s LIMIT 1", (table, name))
+        if not cur.fetchone():
+            t = time.time()
+            cur.execute(f"ALTER TABLE {table} ADD INDEX {name} ({cols})")
+            print(f"  index {table}.{name} created in {time.time() - t:.0f} s", flush=True)
+
+
 def main():
     db = chembl.connect(read_timeout=3600)
     cur = db.cursor()
     cur.execute("SET SESSION character_set_collations='utf8mb3=utf8mb3_general_ci,utf8mb4=utf8mb4_general_ci'")
+    ensure_indexes(cur)
     cur.execute("DROP TABLE IF EXISTS x_mech_candidates_new")
     cur.execute(DDL)
     t = time.time()
