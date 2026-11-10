@@ -3,8 +3,10 @@
  * Query form for the ChEMBL query service (github.com/gerontec/ChEMBL), PHP + Bootstrap 5 (served locally,
  * no CDN: no visitor address goes to third parties).
  *
- * The page calls the REST API server side. The API base URL comes from the web server environment:
- *   Apache:  SetEnv CHEMBL_API http://<api-host>:9099
+ * The page calls the REST API server side. The API base URL comes from, in this order:
+ *   environment CHEMBL_API (Apache: SetEnv, needs mod_env),
+ *   /etc/chembl/web.ini with a line  api = "http://<api-host>:9099",
+ *   http://127.0.0.1:9099.
  * The visitor address is passed on as X-Forwarded-For so the API's per-client rate limit applies per visitor.
  */
 
@@ -13,7 +15,8 @@ declare(strict_types=1);
 const PAGE_ROWS = 1000;        // rows per page on screen
 const XLSX_ROWS = 10000;       // rows in the Excel download (API maximum per request)
 
-$API = rtrim(getenv('CHEMBL_API') ?: 'http://127.0.0.1:9099', '/');
+$ini = is_readable('/etc/chembl/web.ini') ? (parse_ini_file('/etc/chembl/web.ini') ?: []) : [];
+$API = rtrim(getenv('CHEMBL_API') ?: ($ini['api'] ?? 'http://127.0.0.1:9099'), '/');
 
 // ------------------------------------------------------------------ language
 $lang = (($_GET['lang'] ?? '') === 'en' || (!isset($_GET['lang'])
