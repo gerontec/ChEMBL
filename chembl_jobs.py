@@ -2,8 +2,9 @@
 """Batch jobs for large ("monster") queries: queue in table x_job, one worker, result file + mail.
 
 A job runs one API endpoint for a list of names, e.g. /targets/{name}/candidates for 500 targets, pages through
-every result without the 10 000 rows per request limit of the interactive API, writes one gzip file
-(CSV or JSON Lines, first column 'query') and mails a download link.
+every result without the 10 000 rows per request limit of the interactive API and writes one file that opens
+on a plain Windows PC: xlsx (default; sheets 'info', 'results', 'errors'), or csv / jsonl packed as zip.
+The first column 'query' holds the name a row belongs to. A download link is mailed if an address was given.
 
     POST /jobs            submit  (chembl_api.py)
     GET  /jobs/{id}       status
@@ -22,13 +23,13 @@ Environment (worker and API):
 """
 
 import csv
-import gzip
 import json
 import os
 import smtplib
 import sys
 import time
 import traceback
+import zipfile
 from email.message import EmailMessage
 from email.utils import formatdate
 
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS x_job (
     endpoint   VARCHAR(64)  NOT NULL,
     names      MEDIUMTEXT   NOT NULL COMMENT 'JSON list',
     params     TEXT         NOT NULL COMMENT 'JSON object',
-    format     ENUM('csv','jsonl') NOT NULL DEFAULT 'csv',
+    format     ENUM('xlsx','csv','jsonl') NOT NULL DEFAULT 'xlsx',
     n_names    INT          NOT NULL,
     n_done     INT          NOT NULL DEFAULT 0,
     n_rows     BIGINT       NULL,
@@ -83,12 +84,39 @@ CREATE TABLE IF NOT EXISTS x_job (
 """
 
 
+FORMATS = {   # format -> (file extension, media type)
+    "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    "csv": ("csv.zip", "application/zip"),
+    "jsonl": ("jsonl.zip", "application/zip"),
+}
+XLSX_MAX_ROWS = 1_048_575        # Excel rows per sheet minus the header
+
+LEGEND = [
+    ("A", "curated mechanism of action (ChEMBL drug_mechanism)"),
+    ("B", "molecular target, assay confidence >= 8, best pChEMBL >= 7, active in >= 2 documents"),
+    ("C", "molecular target, assay confidence >= 8, best pChEMBL >= 6"),
+    ("D", "molecular target, best pChEMBL >= 5 (about 10 uM)"),
+    ("P", "phenotypic target (organism, cell line, tissue), best pChEMBL >= 5"),
+    ("-", "measured, best pChEMBL < 5"),
+    ("pChEMBL", "-log10 of the molar IC50/EC50/Ki/Kd: 6 = 1 uM, 9 = 1 nM"),
+]
+
+
 def ensure_schema(cur):
     cur.execute(DDL)
+    cur.execute("SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() "
+                "AND table_name = 'x_job' AND column_name = 'format'")
+    row = cur.fetchone()
+    if row and "xlsx" not in (row["column_type"] if isinstance(row, dict) else row[0]):
+        cur.execute("ALTER TABLE x_job MODIFY format ENUM('xlsx','csv','jsonl') NOT NULL DEFAULT 'xlsx'")
 
 
 def result_path(job_id, fmt):
-    return os.path.join(JOB_DIR, f"{job_id}.{'csv' if fmt == 'csv' else 'jsonl'}.gz")
+    return os.path.join(JOB_DIR, f"{job_id}.{FORMATS[fmt][0]}")
+
+
+def download_name(job_id, fmt):
+    return f"chembl_job_{job_id[:8]}.{FORMATS[fmt][0]}"
 
 
 def log(msg):
@@ -124,6 +152,88 @@ def fetch_all(client, path, params, key):
             return rows
 
 
+class XlsxOut:
+    """Streaming xlsx writer: sheet 'info', then 'results' (continued in 'results 2', … above 1 048 575 rows)."""
+
+    def __init__(self, path, job, info):
+        from openpyxl import Workbook
+        self.path, self.wb = path, Workbook(write_only=True)
+        ws = self.wb.create_sheet("info")
+        for k, v in info:
+            ws.append([k, v])
+        self.ws, self.fields, self.n_sheet, self.part = None, None, 0, 0
+
+    def row(self, rec):
+        if self.ws is None or self.n_sheet >= XLSX_MAX_ROWS:
+            self.part += 1
+            self.ws = self.wb.create_sheet("results" if self.part == 1 else f"results {self.part}")
+            self.fields = self.fields or list(rec.keys())
+            self.ws.append(self.fields)
+            self.n_sheet = 0
+        self.ws.append([self._cell(rec.get(f)) for f in self.fields])
+        self.n_sheet += 1
+
+    @staticmethod
+    def _cell(v):
+        """Excel limits: 32 767 characters per cell, no control characters."""
+        if isinstance(v, str):
+            from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+            v = ILLEGAL_CHARACTERS_RE.sub("", v)
+            if len(v) > 32000:
+                v = v[:32000] + " …"
+        return v
+
+    def close(self, errors):
+        if self.ws is None:
+            self.wb.create_sheet("results").append(["no rows"])
+        if errors:
+            ws = self.wb.create_sheet("errors")
+            ws.append(["error"])
+            for e in errors:
+                ws.append([e])
+        self.wb.save(self.path)
+
+
+class TextOut:
+    """csv (UTF-8 with BOM, so Excel shows umlauts) or JSON Lines, packed as zip with info.txt and errors.txt."""
+
+    def __init__(self, path, job, info):
+        self.path, self.fmt, self.info = path, job["format"], info
+        self.inner = download_name(job["job_id"], job["format"])[:-4]          # without .zip
+        self.tmp = path + ".data"
+        self.f = open(self.tmp, "w", encoding="utf-8-sig" if self.fmt == "csv" else "utf-8", newline="")
+        self.writer = None
+
+    def row(self, rec):
+        if self.fmt == "jsonl":
+            self.f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+            return
+        if self.writer is None:
+            self.writer = csv.DictWriter(self.f, fieldnames=list(rec.keys()), extrasaction="ignore")
+            self.writer.writeheader()
+        self.writer.writerow({k: ("" if v is None else v) for k, v in rec.items()})
+
+    def close(self, errors):
+        self.f.close()
+        with zipfile.ZipFile(self.path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(self.tmp, self.inner)
+            z.writestr("info.txt", "".join(f"{k}: {v}\r\n" for k, v in self.info))
+            if errors:
+                z.writestr("errors.txt", "".join(f"{e}\r\n" for e in errors))
+        os.remove(self.tmp)
+
+
+def job_info(client, job, params):
+    try:
+        release = next((v["name"] for v in client.get("/version").json() if v["name"].startswith("ChEMBL_")), "")
+    except Exception:
+        release = ""
+    return ([("job", job["job_id"]), ("created", str(job["created"])), ("endpoint", job["endpoint"]),
+             ("parameters", json.dumps(params) if params else "none"), ("names", job["n_names"]),
+             ("database", release), ("source", f"{PUBLIC_URL}/docs  ·  https://github.com/gerontec/ChEMBL"),
+             ("", "")] + [(f"legend {k}", v) for k, v in LEGEND])
+
+
 def run_job(client, job):
     names = json.loads(job["names"])
     params = json.loads(job["params"])
@@ -131,38 +241,25 @@ def run_job(client, job):
     os.makedirs(JOB_DIR, exist_ok=True)
     final = result_path(job["job_id"], job["format"])
     tmp = final + ".part"
-    n_rows, errors, fields, writer = 0, [], None, None
-    with gzip.open(tmp, "wt", encoding="utf-8", newline="") as out:
-        for i, name in enumerate(names, 1):
-            path = job["endpoint"].replace("{name}", str(name).replace("/", "%2F"))
-            try:
-                rows = fetch_all(client, path, params, key)
-            except LookupError as e:
-                errors.append(f"{name}: {e}")
-                rows = []
-            for r in rows:
-                rec = {"query": name, **{k: v for k, v in r.items() if not isinstance(v, (list, dict))}}
-                if job["format"] == "jsonl":
-                    out.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-                else:
-                    if writer is None:
-                        fields = list(rec.keys())
-                        writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
-                        writer.writeheader()
-                    writer.writerow({k: ("" if v is None else v) for k, v in rec.items()})
-                n_rows += 1
-            if n_rows >= MAX_ROWS:
-                errors.append(f"stopped after {MAX_ROWS} rows (CHEMBL_JOB_MAX_ROWS)")
-                break
-            if i % 20 == 0 or i == len(names):
-                yield i, n_rows
-        if errors:
-            # errors go into the file too, so the result is self-describing
-            if job["format"] == "jsonl":
-                for e in errors:
-                    out.write(json.dumps({"query": None, "error": e}) + "\n")
-            else:
-                out.write("".join(f"# error: {e}\n" for e in errors))
+    info = job_info(client, job, params)
+    out = XlsxOut(tmp, job, info) if job["format"] == "xlsx" else TextOut(tmp, job, info)
+    n_rows, errors = 0, []
+    for i, name in enumerate(names, 1):
+        path = job["endpoint"].replace("{name}", str(name).replace("/", "%2F"))
+        try:
+            rows = fetch_all(client, path, params, key)
+        except LookupError as e:
+            errors.append(f"{name}: {e}")
+            rows = []
+        for r in rows:
+            out.row({"query": name, **{k: v for k, v in r.items() if not isinstance(v, (list, dict))}})
+            n_rows += 1
+        if n_rows >= MAX_ROWS:
+            errors.append(f"stopped after {MAX_ROWS} rows (CHEMBL_JOB_MAX_ROWS)")
+            break
+        if i % 20 == 0 or i == len(names):
+            yield i, n_rows
+    out.close(errors)
     os.replace(tmp, final)
     job["_result"] = (n_rows, os.path.getsize(final), errors)
 
@@ -181,7 +278,7 @@ def send_mail(job, cur):
                 f"  endpoint : {job['endpoint']}\n"
                 f"  names    : {job['n_names']}\n"
                 f"  rows     : {job['n_rows']}\n"
-                f"  size     : {job['n_bytes'] / 1e6:.1f} MB gzip ({job['format']})\n"
+                f"  file     : {download_name(jid, job['format'])}, {job['n_bytes'] / 1e6:.1f} MB\n"
                 f"  errors   : {job['n_errors']}\n\n"
                 f"Download (kept {KEEP_DAYS} days):\n  {PUBLIC_URL}/jobs/{jid}/result\n\n"
                 f"Status:\n  {PUBLIC_URL}/jobs/{jid}\n")

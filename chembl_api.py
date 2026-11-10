@@ -322,7 +322,8 @@ class JobRequest(BaseModel):
     params: Dict[str, Union[str, int, float, bool]] = Field(
         default_factory=dict, examples=[{"levels": "ABCD"}],
         description="query parameters of the endpoint; limit/offset are handled by the worker")
-    format: Literal["csv", "jsonl"] = "csv"
+    format: Literal["xlsx", "csv", "jsonl"] = Field(
+        "xlsx", description="xlsx opens directly in Excel (default); csv and jsonl are delivered as zip")
     email: Optional[str] = Field(None, examples=["you@example.org"],
                                  description="optional: the download link is mailed here; "
                                              "without it, poll /jobs/{job_id}")
@@ -392,7 +393,7 @@ def job_status(job_id: str, cur=Depends(db_cursor)):
     return out
 
 
-@app.get("/jobs/{job_id}/result", tags=["jobs"], summary="Download the result file (gzip)")
+@app.get("/jobs/{job_id}/result", tags=["jobs"], summary="Download the result file (xlsx or zip)")
 def job_result(job_id: str, cur=Depends(db_cursor)):
     row = _job(cur, job_id)
     if row["status"] != "done":
@@ -400,8 +401,9 @@ def job_result(job_id: str, cur=Depends(db_cursor)):
     path = chembl_jobs.result_path(job_id, row["format"])
     if not os.path.exists(path):
         raise HTTPException(410, "result expired")
-    # Content-Encoding identity keeps GZipMiddleware from compressing the .gz file a second time
-    return FileResponse(path, media_type="application/gzip", filename=os.path.basename(path),
+    # xlsx and zip are compressed already; Content-Encoding identity keeps GZipMiddleware away
+    return FileResponse(path, media_type=chembl_jobs.FORMATS[row["format"]][1],
+                        filename=chembl_jobs.download_name(job_id, row["format"]),
                         headers={"Content-Encoding": "identity"})
 
 
