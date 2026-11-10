@@ -10,6 +10,7 @@ Run:  python3 -m uvicorn chembl_api:app --host 0.0.0.0 --port 9099   (see chembl
 Docs: http://<host>:9099/docs
 """
 
+import io
 import ipaddress
 import json
 import os
@@ -21,7 +22,7 @@ from typing import Dict, List, Literal, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 import chembl
@@ -141,6 +142,64 @@ async def guard(request: Request, call_next):
     elif CACHE_MAX_AGE and request.method == "GET" and response.status_code == 200:
         response.headers.setdefault("Cache-Control", f"public, max-age={CACHE_MAX_AGE}")
     return response
+
+
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+LIST_KEYS = ("candidates", "compounds", "targets")
+
+
+def _rows_of(data):
+    """The main row list of an API answer: the answer itself or its candidates/compounds/targets list."""
+    if isinstance(data, list):
+        return data
+    for k in LIST_KEYS:
+        if isinstance(data.get(k), list):
+            return data[k]
+    return next((v for v in data.values() if isinstance(v, list) and v and isinstance(v[0], dict)), [data])
+
+
+def to_xlsx(data, request):
+    from openpyxl import Workbook
+    wb = Workbook(write_only=True)
+    info = wb.create_sheet("info")
+    info.append(["query", str(request.url).replace("format=xlsx", "").rstrip("?&")])
+    info.append(["created", time.strftime("%Y-%m-%d %H:%M:%S")])
+    if isinstance(data, dict) and "total" in data:
+        info.append(["rows", f"{data.get('count')} of {data['total']} (offset {data.get('offset', 0)})"])
+    info.append([])
+    for k, v in chembl_jobs.LEGEND:
+        info.append([f"legend {k}", v])
+    rows = [{k: v for k, v in r.items() if not isinstance(v, (list, dict))} for r in _rows_of(data)
+            if isinstance(r, dict)]
+    ws = wb.create_sheet("results")
+    if rows:
+        fields = list(rows[0].keys())
+        ws.append(fields)
+        for r in rows:
+            ws.append([chembl_jobs.XlsxOut._cell(r.get(f)) for f in fields])
+    else:
+        ws.append(["no rows"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@app.middleware("http")
+async def export(request: Request, call_next):
+    """?format=xlsx on any GET endpoint returns the answer as an Excel file instead of JSON."""
+    if request.method != "GET" or request.query_params.get("format") != "xlsx" \
+            or request.url.path.startswith("/jobs"):
+        return await call_next(request)
+    response = await call_next(request)
+    if response.status_code != 200 or not response.headers.get("content-type", "").startswith("application/json"):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    parts = [p for p in request.url.path.split("/") if p][:3]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", "_".join(parts))[:80] or "chembl"
+    return Response(to_xlsx(json.loads(body), request), media_type=XLSX_TYPE,
+                    headers={"Content-Disposition": f'attachment; filename="chembl_{name}.xlsx"',
+                             "Cache-Control": response.headers.get("cache-control", "no-store"),
+                             "Content-Encoding": "identity"})
 
 
 app.add_middleware(GZipMiddleware, minimum_size=2000)

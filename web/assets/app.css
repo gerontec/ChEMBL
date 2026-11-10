@@ -1,0 +1,8 @@
+/* additions to Bootstrap for the query form */
+th.sort { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sort::after { content: " ↕"; color: var(--bs-secondary-color); font-weight: normal; }
+th.sort[data-dir="asc"]::after { content: " ↑"; color: inherit; }
+th.sort[data-dir="desc"]::after { content: " ↓"; color: inherit; }
+.table td, .table th { font-size: .9rem; }
+details > summary { cursor: pointer; }
+[hidden] { display: none !important; }
