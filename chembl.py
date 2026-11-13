@@ -540,6 +540,8 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None, with_
 def indication_trials(cur, indication_id, with_results=False):
     """The ClinicalTrials.gov trials of one drug_indication row (chembl_trials.py), newest first.
 
+    Only trials with posted results are stored; the others appear with their NCT number only.
+
     primary_completion_date is when the primary outcome was measured on the last participant
     (ACTUAL or ESTIMATED); results_first_posted when results appeared on ClinicalTrials.gov."""
     head = q(cur, f"""SELECT di.drugind_id AS indication_id, {IND_COLS}
@@ -552,7 +554,7 @@ def indication_trials(cur, indication_id, with_results=False):
                               t.results_first_posted, t.has_results,
                               CONCAT('https://clinicaltrials.gov/study/', ci.nct_id) AS url
                        FROM ct_indication ci LEFT JOIN ct_trial t ON t.nct_id = ci.nct_id
-                       WHERE ci.drugind_id = %s {"AND t.has_results = 1" if with_results else ""}
+                       WHERE ci.drugind_id = %s {"AND t.nct_id IS NOT NULL" if with_results else ""}
                        ORDER BY t.primary_completion_date IS NULL, t.primary_completion_date DESC, ci.nct_id""",
                (indication_id,))
     return head[0], trials

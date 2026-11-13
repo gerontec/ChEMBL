@@ -4,17 +4,19 @@
 ChEMBL links a drug indication to its trials (indication_refs, ref_type 'ClinicalTrials', a comma list of
 NCT numbers) but stores no dates or outcomes. This script loads them from the ClinicalTrials.gov API v2:
 
-  ct_trial          one row per NCT number: title, status, phase, enrollment, start date,
+  ct_trial          one row per NCT number WITH POSTED RESULTS (final report on ClinicalTrials.gov);
+                    trials without results are not stored and are checked again on the next run: title, status, phase, enrollment, start date,
                     primary completion date (the last participant was examined for the primary outcome,
                     i.e. when the main result was measured; ACTUAL or ESTIMATED), completion date,
                     first posting of results, has_results, why_stopped (reason given for a stop)
-  ct_indication     drugind_id <-> nct_id
-  drug_indication   summary columns per indication: trial_n, trial_n_results, trial_first_start,
-                    trial_last_primary_completion (ACTUAL dates only), trial_last_results_posted
+  ct_indication     drugind_id <-> nct_id, all trials ChEMBL links (with or without results)
+  drug_indication   summary columns per indication: trial_n (all linked trials), trial_n_results,
+                    trial_first_start, trial_last_primary_completion (ACTUAL dates only),
+                    trial_last_results_posted (the dates of trials with results)
 
 Run it after each ChEMBL import and now and then to refresh the trial status:
     python3 chembl_trials.py                    # all trials
-    python3 chembl_trials.py --open-only        # only trials without posted results and new NCT numbers (cron)
+    python3 chembl_trials.py --open-only        # only NCT numbers not stored yet, i.e. still without results (cron)
     python3 chembl_trials.py --summary-only     # recompute the drug_indication columns
 """
 import argparse
@@ -102,10 +104,10 @@ def row(st):
 
 def summarise(con, cur):
     cur.execute("""UPDATE drug_indication di LEFT JOIN (
-            SELECT ci.drugind_id, COUNT(*) AS n, SUM(t.has_results) AS n_res, MIN(t.start_date) AS first_start,
+            SELECT ci.drugind_id, COUNT(*) AS n, COUNT(t.nct_id) AS n_res, MIN(t.start_date) AS first_start,
                    MAX(CASE WHEN t.primary_completion_type = 'ACTUAL' THEN t.primary_completion_date END) AS last_pc,
                    MAX(t.results_first_posted) AS last_res
-            FROM ct_indication ci JOIN ct_trial t ON t.nct_id = ci.nct_id GROUP BY ci.drugind_id) a
+            FROM ct_indication ci LEFT JOIN ct_trial t ON t.nct_id = ci.nct_id GROUP BY ci.drugind_id) a
             ON a.drugind_id = di.drugind_id
         SET di.trial_n = a.n, di.trial_n_results = a.n_res, di.trial_first_start = a.first_start,
             di.trial_last_primary_completion = a.last_pc, di.trial_last_results_posted = a.last_res""")
@@ -116,14 +118,16 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--summary-only", action="store_true", help="only recompute the drug_indication columns")
     ap.add_argument("--open-only", action="store_true",
-                    help="fetch only trials without posted results (status and dates can still change) and NCT "
-                         "numbers not loaded yet; trials with results are kept as they are")
+                    help="fetch only NCT numbers not stored yet (trials still without posted results and new ones); "
+                         "stored trials are kept as they are")
     a = ap.parse_args()
     con = chembl.connect()
     cur = con.cursor()
     for s in DDL:
         cur.execute(s)
     cur.execute("ALTER TABLE ct_trial ADD COLUMN IF NOT EXISTS why_stopped VARCHAR(500) AFTER status")
+    cur.execute("DELETE FROM ct_trial WHERE has_results = 0")    # rows of older runs without results
+    con.commit()
     if not a.summary_only:
         cur.execute("SELECT drugind_id, ref_id FROM indication_refs WHERE ref_type = 'ClinicalTrials'")
         links = {(r["drugind_id"], n.strip()) for r in cur.fetchall() for n in r["ref_id"].split(",")
@@ -133,20 +137,21 @@ def main():
         con.commit()
         ids = sorted({n for _, n in links})
         if a.open_only:
-            cur.execute("SELECT nct_id FROM ct_trial WHERE has_results = 1")
+            cur.execute("SELECT nct_id FROM ct_trial")
             done = {r["nct_id"] for r in cur.fetchall()}
-            print(f"{len(ids)} NCT numbers, {len(done)} with results skipped", file=sys.stderr)
+            print(f"{len(ids)} NCT numbers, {len(done)} stored with results skipped", file=sys.stderr)
             ids = [n for n in ids if n not in done]
         got = 0
         for i in range(0, len(ids), BATCH):
-            rows = [row(st) for st in fetch(ids[i:i + BATCH])]
+            rows = [r for r in (row(st) for st in fetch(ids[i:i + BATCH])) if r[0] and r[-1]]   # with results only
             cur.executemany("""REPLACE INTO ct_trial (nct_id, title, status, why_stopped, phase, enrollment, start_date,
                     primary_completion_date, primary_completion_type, completion_date, results_first_posted,
-                    has_results) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", [r for r in rows if r[0]])
+                    has_results) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", rows)
             con.commit()
             got += len(rows)
             if (i // BATCH) % 20 == 0 or i + BATCH >= len(ids):
-                print(f"{min(i + BATCH, len(ids))}/{len(ids)} NCT numbers, {got} found", file=sys.stderr, flush=True)
+                print(f"{min(i + BATCH, len(ids))}/{len(ids)} NCT numbers, {got} with results stored",
+                      file=sys.stderr, flush=True)
             time.sleep(0.5)
     summarise(con, cur)
     cur.execute("""SELECT COUNT(*) AS indications, SUM(trial_n > 0) AS with_trials,
