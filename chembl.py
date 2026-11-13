@@ -494,6 +494,13 @@ def has_trial_columns(cur):
     return _has_columns(cur, "trial_n", "trial_last_primary_completion")
 
 
+def has_marker_columns(cur):
+    """True when chembl_trials.py has added the tumour-marker summary columns to drug_indication."""
+    return _has_columns(cur, "trial_n_dna", "trial_markers")
+
+
+MARKER_COLS = """, di.trial_n_dna, di.trial_n_biomarker, di.trial_n_randomized, di.trial_markers"""
+
 TRIAL_COLS = """, di.trial_n, di.trial_n_results, di.trial_first_start, di.trial_last_primary_completion,
                di.trial_last_results_posted"""
 
@@ -510,7 +517,7 @@ def _disease_where(cur, pattern, pattern_de):
     return cond + ")", args
 
 
-def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None, with_results=False):
+def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None, with_results=False, biomarker=None):
     """All compounds with a drug_indication row for a disease.
 
     `pattern` is a regular expression (MariaDB REGEXP = PCRE, case-insensitive) matched against the EFO term
@@ -518,7 +525,9 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None, with_
     `^lung cancer$` exactly that term, `lung|bronch` either word. `pattern_de` (the user's original input)
     is also matched against the German Wikidata names and synonyms added by chembl_terms_de.py.
     An invalid pattern raises pymysql.err.OperationalError 1139, see is_regex_error().
-    `with_results` keeps only rows with at least one ClinicalTrials.gov trial with posted results.
+    `with_results` keeps only rows with at least one ClinicalTrials.gov trial with posted results;
+    `biomarker` 'dna' only rows with a trial whose inclusion requires a DNA test of the tumour (KRAS G12C,
+    MSI-H ...), 'any' also protein markers (PD-L1, HER2 3+). Rows with such trials come first.
 
     drug_indication lists every drug that reached a clinical trial for the indication, whatever the outcome."""
     cond, args = _disease_where(cur, pattern, pattern_de)
@@ -528,13 +537,20 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None, with_
         args.append(min_phase)
     if with_results and has_trial_columns(cur):
         ph += " AND di.trial_n_results > 0"
+    mk = has_marker_columns(cur)
+    if mk and biomarker == "dna":
+        ph += " AND di.trial_n_dna > 0"
+    elif mk and biomarker == "any":
+        ph += " AND di.trial_n_biomarker > 0"
+    order = ("(COALESCE(di.trial_n_dna, 0) > 0) DESC, (COALESCE(di.trial_n_biomarker, 0) > 0) DESC, "
+             if mk else "")
     de = ", COALESCE(di.efo_term_de, di.mesh_heading_de) AS indication_de" if has_german_columns(cur) else ""
-    tr = TRIAL_COLS if has_trial_columns(cur) else ""
+    tr = (TRIAL_COLS if has_trial_columns(cur) else "") + (MARKER_COLS if mk else "")
     return q(cur, f"""
         SELECT di.drugind_id AS indication_id, {IND_COLS}{de}{tr}
         FROM drug_indication di JOIN molecule_dictionary d ON d.molregno = di.molregno
         WHERE {cond} {ph}
-        ORDER BY di.max_phase_for_ind DESC, d.pref_name""", tuple(args))
+        ORDER BY {order}di.max_phase_for_ind DESC, d.pref_name""", tuple(args))
 
 
 def indication_trials(cur, indication_id, with_results=False):
@@ -551,11 +567,16 @@ def indication_trials(cur, indication_id, with_results=False):
         return None, []
     trials = q(cur, f"""SELECT ci.nct_id, t.title, t.status, t.why_stopped, t.phase, t.enrollment, t.start_date,
                               t.primary_completion_date, t.primary_completion_type, t.completion_date,
-                              t.results_first_posted, t.has_results,
+                              t.results_first_posted, t.has_results, t.allocation, t.masking, t.controlled,
+                              t.biomarker_kind, t.biomarker_text,
+                              (SELECT GROUP_CONCAT(m.marker ORDER BY m.kind, m.marker SEPARATOR ', ')
+                               FROM ct_trial_marker m WHERE m.nct_id = ci.nct_id) AS markers,
                               CONCAT('https://clinicaltrials.gov/study/', ci.nct_id) AS url
                        FROM ct_indication ci LEFT JOIN ct_trial t ON t.nct_id = ci.nct_id
                        WHERE ci.drugind_id = %s {"AND t.nct_id IS NOT NULL" if with_results else ""}
-                       ORDER BY t.primary_completion_date IS NULL, t.primary_completion_date DESC, ci.nct_id""",
+                       ORDER BY t.nct_id IS NULL, FIELD(t.biomarker_kind, 'DNA', 'expression') = 0,
+                                FIELD(t.biomarker_kind, 'DNA', 'expression'),
+                                t.primary_completion_date DESC, ci.nct_id""",
                (indication_id,))
     return head[0], trials
 

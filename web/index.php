@@ -42,7 +42,10 @@ $T = [
   'rx_terms' => 'Darunter fallende Krankheitsnamen (Anzahl Wirkstoffe / davon zugelassen) – Klick sucht genau diesen Namen:',
   'rx_translated' => 'Übersetzt:', 'rx_searched' => 'Gesucht mit Muster',
   'rx_bad' => 'Ungültiges Suchmuster',
-  'with_results' => 'nur mit veröffentlichtem Studienergebnis', 'col_trials' => 'Studien (mit Ergebnis)', 'col_pc' => 'Endpunkt gemessen (zuletzt)', 'col_resposted' => 'Ergebnis veröffentlicht (zuletzt)',
+  'with_results' => 'nur mit veröffentlichtem Studienergebnis', 'bm_only' => 'nur Studien mit Gentest im Tumor (DNA)',
+  'col_marker' => 'Gentest im Tumor', 'tr_marker' => 'Biomarker (Einschluss)', 'tr_design' => 'Design',
+  'd_rand' => 'randomisiert', 'd_ctrl' => 'Kontrollarm', 'd_mask' => 'verblindet', 'k_dna' => 'DNA', 'k_expr' => 'Protein',
+  'bm_note' => 'Oben stehen Indikationen mit Studien, die für die Aufnahme einen DNA-Test des Tumors auf ein Zielmolekül verlangen (z. B. KRAS G12C, BRAF V600E, MSI-H/dMMR, EGFR, ALK), danach solche mit Protein-Markern (PD-L1, HER2). Erkannt aus den Einschlusskriterien per Textregeln – einzelne Fehlzuordnungen sind möglich.', 'col_trials' => 'Studien (mit Ergebnis)', 'col_pc' => 'Endpunkt gemessen (zuletzt)', 'col_resposted' => 'Ergebnis veröffentlicht (zuletzt)',
   'tr_title' => 'Klinische Studien', 'tr_name' => 'Titel', 'tr_back' => 'zurück zur Liste', 'tr_status' => 'Status', 'tr_phase' => 'Phase', 'tr_n' => 'Teilnehmer',
   'tr_start' => 'Beginn', 'tr_pc' => 'Primärer Endpunkt gemessen', 'tr_done' => 'Abschluss', 'tr_res' => 'Ergebnis veröffentlicht', 'tr_est' => 'geplant',
   'tr_note' => 'Daten von ClinicalTrials.gov. „Primärer Endpunkt gemessen“ ist der Tag, an dem beim letzten Teilnehmer das Hauptzielkriterium erhoben wurde („geplant“ = noch nicht erreicht). Ob eine Studie erfolgreich war, steht nur im veröffentlichten Ergebnis auf ClinicalTrials.gov (Link).',
@@ -94,7 +97,10 @@ $T = [
   'rx_terms' => 'Disease names it covers (compounds / approved) – click to search exactly this name:',
   'rx_translated' => 'Translated:', 'rx_searched' => 'Searched with pattern',
   'rx_bad' => 'Invalid search pattern',
-  'with_results' => 'only with posted trial results', 'col_trials' => 'Trials (with results)', 'col_pc' => 'Outcome measured (latest)', 'col_resposted' => 'Results posted (latest)',
+  'with_results' => 'only with posted trial results', 'bm_only' => 'only trials with a DNA test of the tumour',
+  'col_marker' => 'Tumour DNA test', 'tr_marker' => 'Biomarker (inclusion)', 'tr_design' => 'Design',
+  'd_rand' => 'randomized', 'd_ctrl' => 'control arm', 'd_mask' => 'blinded', 'k_dna' => 'DNA', 'k_expr' => 'protein',
+  'bm_note' => 'Indications with trials that require a DNA test of the tumour for a target (e.g. KRAS G12C, BRAF V600E, MSI-H/dMMR, EGFR, ALK) come first, then those with protein markers (PD-L1, HER2). Found in the inclusion criteria by text rules – single misassignments are possible.', 'col_trials' => 'Trials (with results)', 'col_pc' => 'Outcome measured (latest)', 'col_resposted' => 'Results posted (latest)',
   'tr_title' => 'Clinical trials', 'tr_name' => 'Title', 'tr_back' => 'back to the list', 'tr_status' => 'Status', 'tr_phase' => 'Phase', 'tr_n' => 'Participants',
   'tr_start' => 'Start', 'tr_pc' => 'Primary outcome measured', 'tr_done' => 'Completion', 'tr_res' => 'Results posted', 'tr_est' => 'planned',
   'tr_note' => 'Data from ClinicalTrials.gov. “Primary outcome measured” is the day the primary outcome was measured on the last participant (“planned” = not reached yet). Whether a trial was successful is only in the posted results on ClinicalTrials.gov (link).',
@@ -141,7 +147,8 @@ if (!$levels) { $levels = $mode === 'target' ? ['A', 'B', 'C', 'D'] : $allLevels
 $human = !empty($_GET['human']);
 $approved = !empty($_GET['approved']);
 $named = !empty($_GET['named']);
-$withRes = (($_GET['res'] ?? '1') === '1');     // disease mode: only indications with posted trial results (default on)
+$withRes = (($_GET['res'] ?? '1') === '1');
+$bmOnly = !empty($_GET['bm']);                    // disease mode: only indications with a DNA-selected trial     // disease mode: only indications with posted trial results (default on)
 $organism = trim((string)($_GET['org'] ?? ''));
 $page = max(1, (int)($_GET['page'] ?? 1));
 
@@ -161,7 +168,7 @@ function api(string $path, array $params = []): array {
 }
 
 /** endpoint path and query parameters for the chosen question (shared by screen, Excel and batch job) */
-function query_spec(string $mode, string $q, array $levels, bool $human, bool $approved, bool $named, string $organism, bool $withRes = false): array {
+function query_spec(string $mode, string $q, array $levels, bool $human, bool $approved, bool $named, string $organism, bool $withRes = false, bool $bmOnly = false): array {
     $n = rawurlencode($q);
     if ($mode === 'compound') {
         $p = ['levels' => implode('', $levels)];
@@ -177,6 +184,7 @@ function query_spec(string $mode, string $q, array $levels, bool $human, bool $a
     }
     $p = $approved ? ['min_phase' => 4] : [];
     if ($withRes) $p['with_results'] = 'true';
+    if ($bmOnly) $p['biomarker'] = 'dna';
     return ["/indications/$n", '/indications/{name}', $p];
 }
 
@@ -236,7 +244,7 @@ if ($trialsId) {
     [$ct, $trials] = api("/indications/$trialsId/trials", $withRes ? ['with_results' => 'true'] : []);
     if ($ct !== 200) { $error = $T['error'] . " ($ct)"; $trials = null; }
 }
-[$path, $jobEndpoint, $params] = query_spec($mode, $q, $levels, $human, $approved, $named, $organism, $withRes);
+[$path, $jobEndpoint, $params] = query_spec($mode, $q, $levels, $human, $approved, $named, $organism, $withRes, $bmOnly);
 if ($q !== '' && !$trialsId) {
     $screen = $params;
     if ($mode === 'target') { $screen['limit'] = PAGE_ROWS; $screen['offset'] = ($page - 1) * PAGE_ROWS; }
@@ -349,6 +357,10 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
           <input class="form-check-input" type="checkbox" name="res" value="1" id="res" <?= $withRes ? 'checked' : '' ?>>
           <label class="form-check-label" for="res"><?= h($T['with_results']) ?></label>
         </div>
+        <div class="form-check opt opt-disease">
+          <input class="form-check-input" type="checkbox" name="bm" value="1" id="bm" <?= $bmOnly ? 'checked' : '' ?>>
+          <label class="form-check-label" for="bm"><?= h($T['bm_only']) ?></label>
+        </div>
         <div class="form-check opt opt-target">
           <input class="form-check-input" type="checkbox" name="named" value="1" id="named" <?= $named ? 'checked' : '' ?>>
           <label class="form-check-label" for="named"><?= h($T['named']) ?></label>
@@ -409,7 +421,7 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
         <thead class="table-light"><tr>
           <th>NCT</th><th><?= h($T['tr_name']) ?></th><th><?= h($T['tr_status']) ?></th><th><?= h($T['tr_phase']) ?></th>
           <th data-num><?= h($T['tr_n']) ?></th><th><?= h($T['tr_start']) ?></th><th><?= h($T['tr_pc']) ?></th>
-          <th><?= h($T['tr_done']) ?></th><th><?= h($T['tr_res']) ?></th>
+          <th><?= h($T['tr_done']) ?></th><th><?= h($T['tr_res']) ?></th><th><?= h($T['tr_marker']) ?></th><th><?= h($T['tr_design']) ?></th>
         </tr></thead>
         <tbody>
         <?php foreach ($trials['trials'] as $t): ?>
@@ -421,7 +433,12 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
             <td class="text-nowrap"><?= h(ym($t['start_date'])) ?></td>
             <td class="text-nowrap"><?= h(ym($t['primary_completion_date'])) ?><?php if (($t['primary_completion_type'] ?? '') === 'ESTIMATED'): ?> <span class="badge text-bg-light border"><?= h($T['tr_est']) ?></span><?php endif; ?></td>
             <td class="text-nowrap"><?= h(ym($t['completion_date'])) ?></td>
+            <?php $design = array_filter([($t['allocation'] ?? '') === 'RANDOMIZED' ? $T['d_rand'] : '',
+                  !empty($t['controlled']) ? $T['d_ctrl'] : '',
+                  in_array($t['masking'] ?? '', ['', 'NONE'], true) ? '' : $T['d_mask'] . ' (' . strtolower($t['masking']) . ')']); ?>
             <td class="text-nowrap"><?php if ($t['results_first_posted']): ?><a href="<?= h($t['url']) ?>?tab=results" target="_blank" rel="noopener"><?= h(ym($t['results_first_posted'])) ?></a><?php endif; ?></td>
+            <td class="small" title="<?= h($t['biomarker_text'] ?? '') ?>"><?php if (!empty($t['biomarker_kind'])): ?><span class="badge <?= $t['biomarker_kind'] === 'DNA' ? 'text-bg-success' : 'text-bg-info' ?>"><?= h($t['biomarker_kind'] === 'DNA' ? $T['k_dna'] : $T['k_expr']) ?></span> <?= h($t['markers']) ?><?php endif; ?></td>
+            <td class="small"><?= h(implode(', ', $design)) ?></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
@@ -463,7 +480,7 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
           <?php endforeach; ?>
         </div>
       <?php endif; ?>
-      <p class="text-body-secondary small mb-2"><?= h($T['indication_note']) ?></p>
+      <p class="text-body-secondary small mb-2"><?= h($T['indication_note']) ?> <?= h($T['bm_note']) ?></p>
     <?php endif; ?>
 
     <?php if ($total > XLSX_ROWS): ?><div class="alert alert-info py-2"><?= h($T['toomany']) ?></div><?php endif; ?>
@@ -484,13 +501,13 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
           <th data-num><?= h($T['col_docs']) ?></th><th><?= h($T['col_mech']) ?></th><th><?= h($T['col_id']) ?></th>
         <?php else: ?>
           <th><?= h($T['col_compound']) ?></th><th data-num><?= h($T['col_indphase']) ?></th><th data-num><?= h($T['col_phase']) ?></th>
-          <th><?= h($T['col_indication']) ?></th><th data-num><?= h($T['col_trials']) ?></th><th><?= h($T['col_pc']) ?></th>
+          <th><?= h($T['col_indication']) ?></th><th data-num><?= h($T['col_marker']) ?></th><th data-num><?= h($T['col_trials']) ?></th><th><?= h($T['col_pc']) ?></th>
           <th><?= h($T['col_resposted']) ?></th><th><?= h($T['col_refs']) ?></th><th><?= h($T['col_id']) ?></th>
         <?php endif; ?>
         </tr></thead>
         <tbody>
         <?php foreach ($rows as $r): ?>
-          <tr>
+          <tr<?= $mode === 'disease' && !empty($r['trial_n_dna']) ? ' class="table-success"' : '' ?>>
           <?php if ($mode === 'compound'): ?>
             <td><?= badge($r['evidence'] ?? '-') ?></td><td><?= h($r['target']) ?></td><td><em><?= h($r['organism']) ?></em></td>
             <td data-v="<?= h($r['best_pchembl']) ?>"><?= h($r['best_pchembl']) ?></td><td class="text-nowrap"><?= h(conc($r['best_pchembl'])) ?></td>
@@ -508,6 +525,10 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
             <td data-v="<?= h($r['phase_for_indication']) ?>"><?= h(phase_label($r['phase_for_indication'], $T)) ?></td>
             <td data-v="<?= h($r['max_phase_any']) ?>"><?= h(phase_label($r['max_phase_any'], $T)) ?></td>
             <td class="small"><?= h($r['efo_term'] ?: $r['mesh_heading']) ?><?php if ($lang === 'de' && !empty($r['indication_de'])): ?><br><em class="text-body-secondary"><?= h($r['indication_de']) ?></em><?php endif; ?></td>
+            <td data-v="<?= h(($r['trial_n_dna'] ?? 0) * 1000 + ($r['trial_n_biomarker'] ?? 0)) ?>" class="small">
+              <?php if (!empty($r['trial_n_dna'])): ?><span class="badge text-bg-success"><?= h($T['k_dna']) ?> <?= (int)$r['trial_n_dna'] ?></span>
+              <?php elseif (!empty($r['trial_n_biomarker'])): ?><span class="badge text-bg-info"><?= h($T['k_expr']) ?> <?= (int)$r['trial_n_biomarker'] ?></span><?php endif; ?>
+              <?php if (!empty($r['trial_markers'])): ?><br><?= h($r['trial_markers']) ?><?php endif; ?></td>
             <td data-v="<?= h($r['trial_n'] ?? '') ?>" class="text-nowrap"><?php if (!empty($r['trial_n'])): ?><a href="<?= h(self_url(['trials' => $r['indication_id']])) ?>"><?= (int)$r['trial_n'] ?></a> (<?= (int)$r['trial_n_results'] ?>)<?php endif; ?></td>
             <td class="text-nowrap"><?= h(ym($r['trial_last_primary_completion'] ?? '')) ?></td>
             <td class="text-nowrap"><?= h(ym($r['trial_last_results_posted'] ?? '')) ?></td>

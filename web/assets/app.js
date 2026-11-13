@@ -107,6 +107,7 @@
     }
     if (m !== "compound" && document.getElementById("approved").checked) p.min_phase = 4;
     if (m === "disease" && document.getElementById("res").checked) p.with_results = true;
+    if (m === "disease" && document.getElementById("bm").checked) p.biomarker = "dna";
     return p;
   }
 

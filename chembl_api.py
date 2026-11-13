@@ -453,6 +453,10 @@ def disease_indications(disease: str,
                         min_phase: Optional[float] = Query(None, description="min. phase for this indication"),
                         with_results: bool = Query(False, description="only indications with at least one "
                                                    "ClinicalTrials.gov trial with posted results"),
+                        biomarker: Optional[str] = Query(None, pattern="^(dna|any)$",
+                                                         description="dna = only indications with a trial that "
+                                                         "requires a DNA test of the tumour (KRAS G12C, MSI-H ...); "
+                                                         "any = also protein markers (PD-L1, HER2)"),
                         cur=Depends(db_cursor)):
     """`disease` is a regular expression (PCRE, case-insensitive) matched against the EFO term and the MeSH
     heading. Plain text finds it anywhere in the term: `lung cancer` also hits `non-small cell lung cancer`.
@@ -465,11 +469,17 @@ def disease_indications(disease: str,
     Trial dates per row (from ClinicalTrials.gov): `trial_n`, `trial_n_results`, `trial_first_start`,
     `trial_last_primary_completion` (latest actual date the primary outcome was measured) and
     `trial_last_results_posted`; the single trials are under `/indications/{indication_id}/trials`.
+    Quality: `trial_n_dna` = trials (with results) whose inclusion criteria require a DNA/RNA test of the
+    tumour for a target (KRAS G12C, BRAF V600E, EGFR, ALK, MSI-H/dMMR, BRCA ...), `trial_n_biomarker` the same
+    including protein markers (PD-L1, HER2 IHC, CD20), `trial_markers` the markers, `trial_n_randomized`.
+    Rows with DNA-selected trials come first. The markers are found by text rules in the inclusion
+    criteria, so single errors are possible.
     `phase_for_indication` is the highest trial phase reached for this indication; it does not say whether
     the trial was positive. An invalid pattern gives 400."""
     pattern, translated = chembl.translate_german(disease)
     rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase, pattern_de=disease,
-                                                                       with_results=with_results), disease)
+                                                                       with_results=with_results,
+                                                                       biomarker=biomarker), disease)
     tr = [{"german": g, "english": e} for g, e in translated]
     if not rows:
         # suggest terms containing one of the longer words of the input
