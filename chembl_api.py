@@ -433,13 +433,15 @@ def indication_terms(q: str = Query(..., min_length=1, max_length=200, descripti
          summary="Clinical trials of one indication with their dates (ClinicalTrials.gov)")
 def indication_trials(indication_id: int,
                       with_results: bool = Query(False, description="only trials with posted results"),
+                      hide_failed: bool = Query(False, description="hide trials whose primary outcome was not "
+                                                "significant or that stopped for lack of efficacy"),
                       cur=Depends(db_cursor)):
     """`indication_id` comes from `/indications/{disease}`. Per trial: status, phase, enrollment, start date,
     **primary completion date** (the primary outcome was measured on the last participant; `ACTUAL` or
     `ESTIMATED`), completion date and the date results were first posted. Loaded by chembl_trials.py;
     whether a trial was positive is only in the posted results on ClinicalTrials.gov."""
     try:
-        head, trials = chembl.indication_trials(cur, indication_id, with_results)
+        head, trials = chembl.indication_trials(cur, indication_id, with_results, hide_failed)
     except pymysql.err.ProgrammingError:
         raise HTTPException(404, {"error": "trial data not loaded (chembl_trials.py)"})
     if head is None:
@@ -457,6 +459,8 @@ def disease_indications(disease: str,
                                                          description="dna = only indications with a trial that "
                                                          "requires a DNA test of the tumour (KRAS G12C, MSI-H ...); "
                                                          "any = also protein markers (PD-L1, HER2)"),
+                        hide_failed: bool = Query(False, description="hide indications whose statistically tested "
+                                                  "trials all missed the primary outcome (p > 0.05)"),
                         cur=Depends(db_cursor)):
     """`disease` is a regular expression (PCRE, case-insensitive) matched against the EFO term and the MeSH
     heading. Plain text finds it anywhere in the term: `lung cancer` also hits `non-small cell lung cancer`.
@@ -474,12 +478,16 @@ def disease_indications(disease: str,
     including protein markers (PD-L1, HER2 IHC, CD20), `trial_markers` the markers, `trial_n_randomized`.
     Rows with DNA-selected trials come first. The markers are found by text rules in the inclusion
     criteria, so single errors are possible.
+    Outcome: `trial_n_positive` = trials whose primary outcome was statistically significant (p <= 0.05 or a
+    confidence interval excluding the null value, as posted on ClinicalTrials.gov), `trial_n_negative` = not
+    significant or stopped for lack of efficacy; trials without a posted test count in neither.
+    `hide_failed=true` drops indications with only negative trials. Significant does not say in which direction.
     `phase_for_indication` is the highest trial phase reached for this indication; it does not say whether
     the trial was positive. An invalid pattern gives 400."""
     pattern, translated = chembl.translate_german(disease)
     rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase, pattern_de=disease,
                                                                        with_results=with_results,
-                                                                       biomarker=biomarker), disease)
+                                                                       biomarker=biomarker, hide_failed=hide_failed), disease)
     tr = [{"german": g, "english": e} for g, e in translated]
     if not rows:
         # suggest terms containing one of the longer words of the input

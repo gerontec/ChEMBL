@@ -10,6 +10,7 @@ NCT numbers) but stores no dates or outcomes. This script loads them from the Cl
                     i.e. when the main result was measured; ACTUAL or ESTIMATED), completion date,
                     first posting of results, has_results, why_stopped (reason given for a stop),
                     allocation (RANDOMIZED ...), masking (NONE/SINGLE/DOUBLE/...), controlled (comparator arm),
+                    outcome_result (primary outcome: 'positive' p <= 0.05 / 'negative' / 'not_tested'), outcome_p,
                     biomarker_kind ('DNA' = inclusion requires a DNA/RNA tumour test such as KRAS G12C or MSI-H,
                     'expression' = a protein marker such as PD-L1), biomarker_text (that criterion)
   ct_trial_marker   nct_id, marker, kind: the markers found in the inclusion criteria
@@ -39,7 +40,9 @@ AGENT = "chembl-trials/1.0 (https://github.com/gerontec/ChEMBL)"
 BATCH = 500
 FIELDS = ("NCTId,BriefTitle,OverallStatus,Phase,EnrollmentCount,StartDate,PrimaryCompletionDate,"
           "PrimaryCompletionDateType,CompletionDate,ResultsFirstPostDate,HasResults,WhyStopped,"
-          "EligibilityCriteria,DesignAllocation,DesignMasking,ArmGroupType")
+          "EligibilityCriteria,DesignAllocation,DesignMasking,ArmGroupType,"
+          "OutcomeMeasureType,OutcomeAnalysisPValue,OutcomeAnalysisParamType,OutcomeAnalysisCILowerLimit,"
+          "OutcomeAnalysisCIUpperLimit")
 
 DDL = [
     """CREATE TABLE IF NOT EXISTS ct_trial (
@@ -77,13 +80,17 @@ DDL = [
         ADD COLUMN IF NOT EXISTS trial_n_dna INT COMMENT 'trials with results whose inclusion requires a DNA tumour test',
         ADD COLUMN IF NOT EXISTS trial_n_biomarker INT COMMENT 'trials with results selecting by any tumour marker',
         ADD COLUMN IF NOT EXISTS trial_n_randomized INT COMMENT 'trials with results that are randomized',
-        ADD COLUMN IF NOT EXISTS trial_markers VARCHAR(500) COMMENT 'tumour markers of these trials'""",
+        ADD COLUMN IF NOT EXISTS trial_markers VARCHAR(500) COMMENT 'tumour markers of these trials',
+        ADD COLUMN IF NOT EXISTS trial_n_positive INT COMMENT 'trials with a significant primary outcome (p <= 0.05)',
+        ADD COLUMN IF NOT EXISTS trial_n_negative INT COMMENT 'trials whose primary outcome was not significant'""",
     """ALTER TABLE ct_trial
         ADD COLUMN IF NOT EXISTS allocation VARCHAR(20) COMMENT 'RANDOMIZED, NON_RANDOMIZED, NA',
         ADD COLUMN IF NOT EXISTS masking VARCHAR(20) COMMENT 'NONE, SINGLE, DOUBLE, TRIPLE, QUADRUPLE',
         ADD COLUMN IF NOT EXISTS controlled TINYINT(1) COMMENT 'has a placebo/active/sham comparator arm',
         ADD COLUMN IF NOT EXISTS biomarker_kind VARCHAR(12) COMMENT 'DNA, expression or NULL',
-        ADD COLUMN IF NOT EXISTS biomarker_text VARCHAR(500) COMMENT 'inclusion criterion asking for the marker'""",
+        ADD COLUMN IF NOT EXISTS biomarker_text VARCHAR(500) COMMENT 'inclusion criterion asking for the marker',
+        ADD COLUMN IF NOT EXISTS outcome_result VARCHAR(12) COMMENT 'primary outcome: positive, negative, not_tested',
+        ADD COLUMN IF NOT EXISTS outcome_p VARCHAR(40) COMMENT 'smallest p-value (or CI) of the primary outcome'""",
 ]
 
 
@@ -172,6 +179,62 @@ def classify_biomarkers(eligibility):
     return markers, ("DNA" if "DNA" in kinds else ("expression" if kinds else None)), first
 
 
+# ------------------------------------------------------------------ result of the primary outcome
+_P = re.compile(r"([<>≤≥]?=?)\s*(\d*\.?\d+(?:[eE]-?\d+)?)")
+_FUTILE = re.compile(r"(lack|absence|insufficient|no|low|limited) (of )?(efficac|benefit|effect|response|activity)|"
+                     r"futil|ineffective|did not meet|not meet (the |its )?(primary )?endpoint|"
+                     r"unlikely to (meet|achieve|show|demonstrate)", re.I)
+
+
+def _p_value(s):
+    """'<0.001' -> 0.001 (upper bound), '=0.2422' -> 0.2422, '>0.05' -> 1.0, unparsable -> None."""
+    m = _P.search((s or "").replace(",", "."))
+    if not m:
+        return None
+    try:
+        v = float(m.group(2))
+    except ValueError:
+        return None
+    return 1.0 if m.group(1).startswith((">", "≥")) else v
+
+
+def _f(x):
+    try:
+        return float(str(x).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def classify_outcome(st, status, why_stopped):
+    """('positive' | 'negative' | 'not_tested', best p as text) for the primary outcome(s) of a trial with results.
+
+    positive = at least one statistical analysis of a primary outcome with p <= 0.05, or without p a confidence
+    interval that excludes the null value (1 for ratios, 0 otherwise); negative = analyses exist and none is
+    significant, or the trial was stopped for lack of efficacy/futility; not_tested = no analysis was posted
+    (typical for single-arm trials). Significant does not tell the direction (benefit or harm)."""
+    prim = [o for o in st.get("resultsSection", {}).get("outcomeMeasuresModule", {}).get("outcomeMeasures", [])
+            if o.get("type") == "PRIMARY"]
+    analyses = [a for o in prim for a in o.get("analyses", [])]
+    if status == "TERMINATED" and why_stopped and _FUTILE.search(why_stopped):
+        return "negative", None
+    best, best_txt, tested = None, None, False
+    for a in analyses:
+        p = _p_value(a.get("pValue"))
+        if p is not None:
+            tested = True
+            if best is None or p < best:
+                best, best_txt = p, a.get("pValue").strip()[:30]
+            continue
+        lo, hi = _f(a.get("ciLowerLimit")), _f(a.get("ciUpperLimit"))
+        if lo is not None and hi is not None:
+            tested = True
+            null = 1.0 if "ratio" in (a.get("paramType") or "").lower() else 0.0
+            if lo > null or hi < null:
+                best, best_txt = best if best is not None else 0.0, best_txt or f"CI {lo}–{hi}"
+    if best is not None and best <= 0.05:
+        return "positive", best_txt
+    return ("negative" if tested else "not_tested"), best_txt
+
 
 def row(st):
     p = st.get("protocolSection", {})
@@ -181,6 +244,7 @@ def row(st):
     di = d.get("designInfo", {})
     arms = {g.get("type") for g in p.get("armsInterventionsModule", {}).get("armGroups", [])}
     markers, kind, text = classify_biomarkers(p.get("eligibilityModule", {}).get("eligibilityCriteria"))
+    result, pval = classify_outcome(st, s.get("overallStatus"), s.get("whyStopped"))
     return (p.get("identificationModule", {}).get("nctId"),
             (p.get("identificationModule", {}).get("briefTitle") or "")[:600] or None,
             s.get("overallStatus"), (s.get("whyStopped") or "")[:500] or None, "/".join(d.get("phases", []))[:40] or None,
@@ -189,7 +253,8 @@ def row(st):
             day(s.get("completionDateStruct", {}).get("date")),
             day(s.get("resultsFirstPostDateStruct", {}).get("date")), int(bool(st.get("hasResults"))),
             di.get("allocation"), di.get("maskingInfo", {}).get("masking"),
-            int(bool(arms & {"PLACEBO_COMPARATOR", "ACTIVE_COMPARATOR", "SHAM_COMPARATOR"})), kind, text), markers
+            int(bool(arms & {"PLACEBO_COMPARATOR", "ACTIVE_COMPARATOR", "SHAM_COMPARATOR"})), kind, text,
+            result, pval), markers
 
 
 def summarise(con, cur):
@@ -198,6 +263,7 @@ def summarise(con, cur):
                    MAX(CASE WHEN t.primary_completion_type = 'ACTUAL' THEN t.primary_completion_date END) AS last_pc,
                    MAX(t.results_first_posted) AS last_res, SUM(t.biomarker_kind = 'DNA') AS n_dna,
                    COUNT(t.biomarker_kind) AS n_bm, SUM(t.allocation = 'RANDOMIZED') AS n_rand,
+                   SUM(t.outcome_result = 'positive') AS n_pos, SUM(t.outcome_result = 'negative') AS n_neg,
                    (SELECT SUBSTRING(GROUP_CONCAT(DISTINCT m.marker ORDER BY m.kind, m.marker SEPARATOR ', '), 1, 500)
                     FROM ct_indication c2 JOIN ct_trial_marker m ON m.nct_id = c2.nct_id
                     WHERE c2.drugind_id = ci.drugind_id) AS markers
@@ -206,7 +272,7 @@ def summarise(con, cur):
         SET di.trial_n = a.n, di.trial_n_results = a.n_res, di.trial_first_start = a.first_start,
             di.trial_last_primary_completion = a.last_pc, di.trial_last_results_posted = a.last_res,
             di.trial_n_dna = a.n_dna, di.trial_n_biomarker = a.n_bm, di.trial_n_randomized = a.n_rand,
-            di.trial_markers = a.markers""")
+            di.trial_markers = a.markers, di.trial_n_positive = a.n_pos, di.trial_n_negative = a.n_neg""")
     con.commit()
 
 
@@ -250,8 +316,9 @@ def main():
             rows = [r for r, _ in parsed]
             cur.executemany("""REPLACE INTO ct_trial (nct_id, title, status, why_stopped, phase, enrollment, start_date,
                     primary_completion_date, primary_completion_type, completion_date, results_first_posted,
-                    has_results, allocation, masking, controlled, biomarker_kind, biomarker_text)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", rows)
+                    has_results, allocation, masking, controlled, biomarker_kind, biomarker_text, outcome_result,
+                    outcome_p) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            rows)
             if rows:
                 cur.execute(f"DELETE FROM ct_trial_marker WHERE nct_id IN ({','.join(['%s'] * len(rows))})",
                             [r[0] for r in rows])
@@ -267,7 +334,9 @@ def main():
     cur.execute("""SELECT COUNT(*) AS indications, SUM(trial_n > 0) AS with_trials,
                           SUM(trial_last_primary_completion IS NOT NULL) AS with_primary_completion,
                           SUM(trial_n_results > 0) AS with_results, SUM(trial_n_dna > 0) AS with_dna_test,
-                          SUM(trial_n_biomarker > 0) AS with_any_marker FROM drug_indication""")
+                          SUM(trial_n_biomarker > 0) AS with_any_marker, SUM(trial_n_positive > 0) AS with_positive,
+                          SUM(trial_n_negative > 0 AND COALESCE(trial_n_positive, 0) = 0) AS only_negative
+                   FROM drug_indication""")
     print(cur.fetchone())
 
 
