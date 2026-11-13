@@ -431,13 +431,15 @@ def indication_terms(q: str = Query(..., min_length=1, max_length=200, descripti
 
 @app.get("/indications/{indication_id}/trials", tags=["indications"],
          summary="Clinical trials of one indication with their dates (ClinicalTrials.gov)")
-def indication_trials(indication_id: int, cur=Depends(db_cursor)):
+def indication_trials(indication_id: int,
+                      with_results: bool = Query(False, description="only trials with posted results"),
+                      cur=Depends(db_cursor)):
     """`indication_id` comes from `/indications/{disease}`. Per trial: status, phase, enrollment, start date,
     **primary completion date** (the primary outcome was measured on the last participant; `ACTUAL` or
     `ESTIMATED`), completion date and the date results were first posted. Loaded by chembl_trials.py;
     whether a trial was positive is only in the posted results on ClinicalTrials.gov."""
     try:
-        head, trials = chembl.indication_trials(cur, indication_id)
+        head, trials = chembl.indication_trials(cur, indication_id, with_results)
     except pymysql.err.ProgrammingError:
         raise HTTPException(404, {"error": "trial data not loaded (chembl_trials.py)"})
     if head is None:
@@ -449,6 +451,8 @@ def indication_trials(indication_id: int, cur=Depends(db_cursor)):
          summary="Disease → all compounds that reached a clinical trial for it (any outcome)")
 def disease_indications(disease: str,
                         min_phase: Optional[float] = Query(None, description="min. phase for this indication"),
+                        with_results: bool = Query(False, description="only indications with at least one "
+                                                   "ClinicalTrials.gov trial with posted results"),
                         cur=Depends(db_cursor)):
     """`disease` is a regular expression (PCRE, case-insensitive) matched against the EFO term and the MeSH
     heading. Plain text finds it anywhere in the term: `lung cancer` also hits `non-small cell lung cancer`.
@@ -464,7 +468,8 @@ def disease_indications(disease: str,
     `phase_for_indication` is the highest trial phase reached for this indication; it does not say whether
     the trial was positive. An invalid pattern gives 400."""
     pattern, translated = chembl.translate_german(disease)
-    rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase, pattern_de=disease), disease)
+    rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase, pattern_de=disease,
+                                                                       with_results=with_results), disease)
     tr = [{"german": g, "english": e} for g, e in translated]
     if not rows:
         # suggest terms containing one of the longer words of the input

@@ -510,7 +510,7 @@ def _disease_where(cur, pattern, pattern_de):
     return cond + ")", args
 
 
-def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None):
+def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None, with_results=False):
     """All compounds with a drug_indication row for a disease.
 
     `pattern` is a regular expression (MariaDB REGEXP = PCRE, case-insensitive) matched against the EFO term
@@ -518,6 +518,7 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None):
     `^lung cancer$` exactly that term, `lung|bronch` either word. `pattern_de` (the user's original input)
     is also matched against the German Wikidata names and synonyms added by chembl_terms_de.py.
     An invalid pattern raises pymysql.err.OperationalError 1139, see is_regex_error().
+    `with_results` keeps only rows with at least one ClinicalTrials.gov trial with posted results.
 
     drug_indication lists every drug that reached a clinical trial for the indication, whatever the outcome."""
     cond, args = _disease_where(cur, pattern, pattern_de)
@@ -525,6 +526,8 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None):
     if min_phase is not None:
         ph = "AND di.max_phase_for_ind >= %s"
         args.append(min_phase)
+    if with_results and has_trial_columns(cur):
+        ph += " AND di.trial_n_results > 0"
     de = ", COALESCE(di.efo_term_de, di.mesh_heading_de) AS indication_de" if has_german_columns(cur) else ""
     tr = TRIAL_COLS if has_trial_columns(cur) else ""
     return q(cur, f"""
@@ -534,7 +537,7 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None):
         ORDER BY di.max_phase_for_ind DESC, d.pref_name""", tuple(args))
 
 
-def indication_trials(cur, indication_id):
+def indication_trials(cur, indication_id, with_results=False):
     """The ClinicalTrials.gov trials of one drug_indication row (chembl_trials.py), newest first.
 
     primary_completion_date is when the primary outcome was measured on the last participant
@@ -544,12 +547,12 @@ def indication_trials(cur, indication_id):
                       WHERE di.drugind_id = %s""", (indication_id,))
     if not head:
         return None, []
-    trials = q(cur, """SELECT ci.nct_id, t.title, t.status, t.why_stopped, t.phase, t.enrollment, t.start_date,
+    trials = q(cur, f"""SELECT ci.nct_id, t.title, t.status, t.why_stopped, t.phase, t.enrollment, t.start_date,
                               t.primary_completion_date, t.primary_completion_type, t.completion_date,
                               t.results_first_posted, t.has_results,
                               CONCAT('https://clinicaltrials.gov/study/', ci.nct_id) AS url
                        FROM ct_indication ci LEFT JOIN ct_trial t ON t.nct_id = ci.nct_id
-                       WHERE ci.drugind_id = %s
+                       WHERE ci.drugind_id = %s {"AND t.has_results = 1" if with_results else ""}
                        ORDER BY t.primary_completion_date IS NULL, t.primary_completion_date DESC, ci.nct_id""",
                (indication_id,))
     return head[0], trials

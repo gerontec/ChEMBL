@@ -42,7 +42,7 @@ $T = [
   'rx_terms' => 'Darunter fallende Krankheitsnamen (Anzahl Wirkstoffe / davon zugelassen) – Klick sucht genau diesen Namen:',
   'rx_translated' => 'Übersetzt:', 'rx_searched' => 'Gesucht mit Muster',
   'rx_bad' => 'Ungültiges Suchmuster',
-  'col_trials' => 'Studien (mit Ergebnis)', 'col_pc' => 'Endpunkt gemessen (zuletzt)', 'col_resposted' => 'Ergebnis veröffentlicht (zuletzt)',
+  'with_results' => 'nur mit veröffentlichtem Studienergebnis', 'col_trials' => 'Studien (mit Ergebnis)', 'col_pc' => 'Endpunkt gemessen (zuletzt)', 'col_resposted' => 'Ergebnis veröffentlicht (zuletzt)',
   'tr_title' => 'Klinische Studien', 'tr_name' => 'Titel', 'tr_back' => 'zurück zur Liste', 'tr_status' => 'Status', 'tr_phase' => 'Phase', 'tr_n' => 'Teilnehmer',
   'tr_start' => 'Beginn', 'tr_pc' => 'Primärer Endpunkt gemessen', 'tr_done' => 'Abschluss', 'tr_res' => 'Ergebnis veröffentlicht', 'tr_est' => 'geplant',
   'tr_note' => 'Daten von ClinicalTrials.gov. „Primärer Endpunkt gemessen“ ist der Tag, an dem beim letzten Teilnehmer das Hauptzielkriterium erhoben wurde („geplant“ = noch nicht erreicht). Ob eine Studie erfolgreich war, steht nur im veröffentlichten Ergebnis auf ClinicalTrials.gov (Link).',
@@ -94,7 +94,7 @@ $T = [
   'rx_terms' => 'Disease names it covers (compounds / approved) – click to search exactly this name:',
   'rx_translated' => 'Translated:', 'rx_searched' => 'Searched with pattern',
   'rx_bad' => 'Invalid search pattern',
-  'col_trials' => 'Trials (with results)', 'col_pc' => 'Outcome measured (latest)', 'col_resposted' => 'Results posted (latest)',
+  'with_results' => 'only with posted trial results', 'col_trials' => 'Trials (with results)', 'col_pc' => 'Outcome measured (latest)', 'col_resposted' => 'Results posted (latest)',
   'tr_title' => 'Clinical trials', 'tr_name' => 'Title', 'tr_back' => 'back to the list', 'tr_status' => 'Status', 'tr_phase' => 'Phase', 'tr_n' => 'Participants',
   'tr_start' => 'Start', 'tr_pc' => 'Primary outcome measured', 'tr_done' => 'Completion', 'tr_res' => 'Results posted', 'tr_est' => 'planned',
   'tr_note' => 'Data from ClinicalTrials.gov. “Primary outcome measured” is the day the primary outcome was measured on the last participant (“planned” = not reached yet). Whether a trial was successful is only in the posted results on ClinicalTrials.gov (link).',
@@ -141,6 +141,7 @@ if (!$levels) { $levels = $mode === 'target' ? ['A', 'B', 'C', 'D'] : $allLevels
 $human = !empty($_GET['human']);
 $approved = !empty($_GET['approved']);
 $named = !empty($_GET['named']);
+$withRes = (($_GET['res'] ?? '1') === '1');     // disease mode: only indications with posted trial results (default on)
 $organism = trim((string)($_GET['org'] ?? ''));
 $page = max(1, (int)($_GET['page'] ?? 1));
 
@@ -160,7 +161,7 @@ function api(string $path, array $params = []): array {
 }
 
 /** endpoint path and query parameters for the chosen question (shared by screen, Excel and batch job) */
-function query_spec(string $mode, string $q, array $levels, bool $human, bool $approved, bool $named, string $organism): array {
+function query_spec(string $mode, string $q, array $levels, bool $human, bool $approved, bool $named, string $organism, bool $withRes = false): array {
     $n = rawurlencode($q);
     if ($mode === 'compound') {
         $p = ['levels' => implode('', $levels)];
@@ -175,6 +176,7 @@ function query_spec(string $mode, string $q, array $levels, bool $human, bool $a
         return ["/targets/$n/candidates", '/targets/{name}/candidates', $p];
     }
     $p = $approved ? ['min_phase' => 4] : [];
+    if ($withRes) $p['with_results'] = 'true';
     return ["/indications/$n", '/indications/{name}', $p];
 }
 
@@ -231,10 +233,10 @@ $result = null; $error = null; $notfound = null; $compoundInfo = null; $diseaseI
 $trialsId = ctype_digit((string)($_GET['trials'] ?? '')) ? (int)$_GET['trials'] : 0;
 $trials = null;
 if ($trialsId) {
-    [$ct, $trials] = api("/indications/$trialsId/trials");
+    [$ct, $trials] = api("/indications/$trialsId/trials", $withRes ? ['with_results' => 'true'] : []);
     if ($ct !== 200) { $error = $T['error'] . " ($ct)"; $trials = null; }
 }
-[$path, $jobEndpoint, $params] = query_spec($mode, $q, $levels, $human, $approved, $named, $organism);
+[$path, $jobEndpoint, $params] = query_spec($mode, $q, $levels, $human, $approved, $named, $organism, $withRes);
 if ($q !== '' && !$trialsId) {
     $screen = $params;
     if ($mode === 'target') { $screen['limit'] = PAGE_ROWS; $screen['offset'] = ($page - 1) * PAGE_ROWS; }
@@ -341,6 +343,11 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
         <div class="form-check mt-md-4">
           <input class="form-check-input" type="checkbox" name="approved" value="1" id="approved" <?= $approved ? 'checked' : '' ?>>
           <label class="form-check-label" for="approved"><?= h($T['approved']) ?></label>
+        </div>
+        <div class="form-check opt opt-disease">
+          <input type="hidden" name="res" value="0">
+          <input class="form-check-input" type="checkbox" name="res" value="1" id="res" <?= $withRes ? 'checked' : '' ?>>
+          <label class="form-check-label" for="res"><?= h($T['with_results']) ?></label>
         </div>
         <div class="form-check opt opt-target">
           <input class="form-check-input" type="checkbox" name="named" value="1" id="named" <?= $named ? 'checked' : '' ?>>
