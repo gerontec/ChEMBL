@@ -424,7 +424,7 @@ def indication_terms(q: str = Query(..., min_length=1, max_length=200, descripti
     approved drugs. Same pattern rules as `/indications/{disease}`; use it to check a pattern before the full
     query or to pick one term exactly (`^term$`). German disease words are translated as in `/indications/{disease}`."""
     pattern, translated = chembl.translate_german(q)
-    terms = _regex_or_400(lambda: chembl.indication_terms(cur, pattern, limit), q)
+    terms = _regex_or_400(lambda: chembl.indication_terms(cur, pattern, limit, pattern_de=q), q)
     return {"query": q, "pattern": pattern, "translated": [{"german": g, "english": e} for g, e in translated],
             "count": len(terms), "terms": terms}
 
@@ -440,10 +440,12 @@ def disease_indications(disease: str,
     `colou?r` = optional letter. `/indications/terms?q=` lists the terms a pattern hits.
     Common German disease words are replaced by English patterns first (`Darmkrebs`, `Lungenkrebs`,
     `Schlaganfall`); `pattern` in the answer shows what was searched, `translated` the replacements.
+    The input as typed is also matched against German disease names and synonyms from Wikidata
+    (`indication_de`), e.g. `Schuppenflechte`, `Mukoviszidose`, `Kolorektal`.
     `phase_for_indication` is the highest trial phase reached for this indication; it does not say whether
     the trial was positive. An invalid pattern gives 400."""
     pattern, translated = chembl.translate_german(disease)
-    rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase), disease)
+    rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase, pattern_de=disease), disease)
     tr = [{"german": g, "english": e} for g, e in translated]
     if not rows:
         # suggest terms containing one of the longer words of the input

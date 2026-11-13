@@ -472,44 +472,76 @@ def is_regex_error(exc):
     return bool(exc.args) and exc.args[0] == REGEX_ERROR
 
 
-def indications_for_disease(cur, pattern, min_phase=None):
+_DE_COLS = None
+
+
+def has_german_columns(cur):
+    """True when chembl_terms_de.py has added the German name columns to drug_indication (checked once)."""
+    global _DE_COLS
+    if _DE_COLS is None:
+        cur.execute("""SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE()
+                       AND table_name = 'drug_indication' AND column_name IN ('efo_term_de', 'mesh_heading_de')""")
+        _DE_COLS = cur.fetchone()["n"] == 2
+    return _DE_COLS
+
+
+_DE_MATCH = "CONCAT_WS('|', di.efo_term_de, di.efo_synonyms_de, di.mesh_heading_de, di.mesh_synonyms_de) REGEXP %s"
+
+
+def _disease_where(cur, pattern, pattern_de):
+    """WHERE condition and arguments: English pattern on EFO/MeSH, German input on the German name columns."""
+    cond, args = "(di.efo_term REGEXP %s OR di.mesh_heading REGEXP %s", [pattern, pattern]
+    if pattern_de and has_german_columns(cur):
+        cond += " OR " + _DE_MATCH
+        args.append(pattern_de)
+    return cond + ")", args
+
+
+def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None):
     """All compounds with a drug_indication row for a disease.
 
     `pattern` is a regular expression (MariaDB REGEXP = PCRE, case-insensitive) matched against the EFO term
     and the MeSH heading: `lung` finds every term containing lung, `^lung` terms starting with it,
-    `^lung cancer$` exactly that term, `lung|bronch` either word. An invalid pattern raises
-    pymysql.err.OperationalError 1139, see is_regex_error().
+    `^lung cancer$` exactly that term, `lung|bronch` either word. `pattern_de` (the user's original input)
+    is also matched against the German Wikidata names and synonyms added by chembl_terms_de.py.
+    An invalid pattern raises pymysql.err.OperationalError 1139, see is_regex_error().
 
     drug_indication lists every drug that reached a clinical trial for the indication, whatever the outcome."""
-    args = [pattern, pattern]
+    cond, args = _disease_where(cur, pattern, pattern_de)
     ph = ""
     if min_phase is not None:
         ph = "AND di.max_phase_for_ind >= %s"
         args.append(min_phase)
+    de = ", COALESCE(di.efo_term_de, di.mesh_heading_de) AS indication_de" if has_german_columns(cur) else ""
     return q(cur, f"""
-        SELECT {IND_COLS}
+        SELECT {IND_COLS}{de}
         FROM drug_indication di JOIN molecule_dictionary d ON d.molregno = di.molregno
-        WHERE (di.efo_term REGEXP %s OR di.mesh_heading REGEXP %s) {ph}
+        WHERE {cond} {ph}
         ORDER BY di.max_phase_for_ind DESC, d.pref_name""", tuple(args))
 
 
-def indication_terms(cur, pattern, limit=40):
+def indication_terms(cur, pattern, limit=40, pattern_de=None):
     """Distinct disease terms matching the pattern, with the number of compounds and of approved drugs each.
 
     Lets a user see which EFO terms / MeSH headings a pattern hits before (or after) running the full query.
-    Rows whose EFO term matches are counted under the EFO term, the others under the MeSH heading."""
-    return q(cur, """
-        SELECT term, kind, COUNT(DISTINCT molregno) AS n_compounds,
+    A row counts under its EFO term when that matches (or only the German names match), else under its
+    MeSH heading. `name_de` is the German name where one is known."""
+    cond, args = _disease_where(cur, pattern, pattern_de)
+    de = has_german_columns(cur)
+    return q(cur, f"""
+        SELECT term, kind, {"MAX(name_de)" if de else "NULL"} AS name_de, COUNT(DISTINCT molregno) AS n_compounds,
                COUNT(DISTINCT CASE WHEN ph >= 4 THEN molregno END) AS n_approved
-        FROM (SELECT efo_term AS term, 'EFO' AS kind, molregno, max_phase_for_ind AS ph
-              FROM drug_indication WHERE efo_term REGEXP %s
-              UNION ALL
-              SELECT mesh_heading, 'MeSH', molregno, max_phase_for_ind
-              FROM drug_indication WHERE mesh_heading REGEXP %s AND NOT (efo_term REGEXP %s)) u
+        FROM (SELECT CASE WHEN di.mesh_heading REGEXP %s AND NOT COALESCE(di.efo_term REGEXP %s, 0)
+                          THEN di.mesh_heading ELSE COALESCE(di.efo_term, di.mesh_heading) END AS term,
+                     CASE WHEN di.mesh_heading REGEXP %s AND NOT COALESCE(di.efo_term REGEXP %s, 0)
+                          THEN 'MeSH' ELSE 'EFO' END AS kind,
+                     {"CASE WHEN di.mesh_heading REGEXP %s AND NOT COALESCE(di.efo_term REGEXP %s, 0) THEN di.mesh_heading_de ELSE di.efo_term_de END" if de else "NULL"} AS name_de,
+                     di.molregno, di.max_phase_for_ind AS ph
+              FROM drug_indication di WHERE {cond}) u
         WHERE term IS NOT NULL
         GROUP BY term, kind
         ORDER BY n_compounds DESC, term
-        LIMIT %s""", (pattern, pattern, pattern, limit))
+        LIMIT %s""", tuple([pattern] * (6 if de else 4) + args + [limit]))
 
 
 def indications_for_compound(cur, molregnos):

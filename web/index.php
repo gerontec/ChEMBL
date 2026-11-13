@@ -37,7 +37,7 @@ $T = [
                  ['lung|bronch', '„lung“ oder „bronch“'], ['colo(n|rectal)', '„colon“ oder „colorectal“'],
                  ['tumou?r', 'u darf fehlen: tumor, tumour'], ['lung.*carcinoma', 'beliebiger Text dazwischen'],
                  ['type [12] diabetes', 'eine der Ziffern 1, 2'], ['\\(', 'Sonderzeichen ( ) [ ] . * + ? | ^ $ wörtlich: Backslash davor']],
-  'rx_german' => 'Deutsche Wörter (Darmkrebs, Brustkrebs, Lungenkrebs, Hautkrebs, Blutkrebs, Schlaganfall, Herzinfarkt, Bluthochdruck, Rheuma, Demenz, Schuppenflechte …) werden vor der Suche ins Englische übersetzt. Unbekannte deutsche Wörter bitte englisch eingeben.',
+  'rx_german' => 'Deutsch geht auch: gesucht wird zusätzlich in deutschen Krankheitsnamen und Synonymen aus Wikidata (für rund 80 % der Einträge), und gängige Wörter (Darmkrebs, Brustkrebs, Lungenkrebs, Hautkrebs, Blutkrebs, Schlaganfall, Herzinfarkt, Bluthochdruck, Rheuma, Demenz …) werden ins Englische übersetzt. Findet ein deutsches Wort nichts, bitte englisch suchen.',
   'rx_examples' => 'Beispiele zum Anklicken:',
   'rx_terms' => 'Darunter fallende Krankheitsnamen (Anzahl Wirkstoffe / davon zugelassen) – Klick sucht genau diesen Namen:',
   'rx_translated' => 'Übersetzt:', 'rx_searched' => 'Gesucht mit Muster',
@@ -84,7 +84,7 @@ $T = [
                  ['lung|bronch', '“lung” or “bronch”'], ['colo(n|rectal)', '“colon” or “colorectal”'],
                  ['tumou?r', 'the u is optional: tumor, tumour'], ['lung.*carcinoma', 'any text in between'],
                  ['type [12] diabetes', 'one of the digits 1, 2'], ['\\(', 'special characters ( ) [ ] . * + ? | ^ $ literally: backslash first']],
-  'rx_german' => 'German words (Darmkrebs, Brustkrebs, Lungenkrebs, Hautkrebs, Blutkrebs, Schlaganfall, Herzinfarkt, Bluthochdruck, Rheuma, Demenz, Schuppenflechte …) are translated to English before the search.',
+  'rx_german' => 'German works too: the search also covers German disease names and synonyms from Wikidata (about 80 % of the entries), and common words (Darmkrebs, Brustkrebs, Lungenkrebs, Schlaganfall …) are translated to English.',
   'rx_examples' => 'Examples to click:',
   'rx_terms' => 'Disease names it covers (compounds / approved) – click to search exactly this name:',
   'rx_translated' => 'Translated:', 'rx_searched' => 'Searched with pattern',
@@ -400,7 +400,7 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
         <div class="small mb-2"><?= h($T['rx_terms']) ?><br>
           <?php foreach ($terms as $t): ?>
             <a class="badge text-bg-light text-decoration-none border fw-normal" title="<?= h($t['kind']) ?>"
-               href="<?= h(self_url(['q' => exact_rx($t['term']), 'page' => null])) ?>"><?= h($t['term']) ?> <span class="text-body-secondary"><?= (int)$t['n_compounds'] ?>/<?= (int)$t['n_approved'] ?></span></a>
+               href="<?= h(self_url(['q' => exact_rx($t['term']), 'page' => null])) ?>"><?= h($t['term']) ?><?php if ($lang === 'de' && !empty($t['name_de'])): ?> <em>(<?= h($t['name_de']) ?>)</em><?php endif; ?> <span class="text-body-secondary"><?= (int)$t['n_compounds'] ?>/<?= (int)$t['n_approved'] ?></span></a>
           <?php endforeach; ?>
         </div>
       <?php endif; ?>
@@ -447,7 +447,7 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
             <td><?= h($r['compound'] ?: '–') ?></td>
             <td data-v="<?= h($r['phase_for_indication']) ?>"><?= h(phase_label($r['phase_for_indication'], $T)) ?></td>
             <td data-v="<?= h($r['max_phase_any']) ?>"><?= h(phase_label($r['max_phase_any'], $T)) ?></td>
-            <td class="small"><?= h($r['efo_term'] ?: $r['mesh_heading']) ?></td>
+            <td class="small"><?= h($r['efo_term'] ?: $r['mesh_heading']) ?><?php if ($lang === 'de' && !empty($r['indication_de'])): ?><br><em class="text-body-secondary"><?= h($r['indication_de']) ?></em><?php endif; ?></td>
             <td class="small"><?php if ($refs): ?><a href="<?= h($refs[0]) ?>" target="_blank" rel="noopener"><?= h($r['ref_types']) ?></a><?php else: ?><?= h($r['ref_types']) ?><?php endif; ?></td>
             <td class="small"><?= chembl_link($r['compound_chembl_id'], 'compound') ?></td>
           <?php endif; ?>
