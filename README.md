@@ -375,7 +375,7 @@ Output as aligned text, `--csv` or `--json`.
 * `chembl_api.py`: REST API on top of `chembl.py`, Swagger UI at `/docs`.
 * `chembl_mech_build.py`: builds the table `x_mech_candidates` and the view `x_mech_evidence` (evidence layer).
 * `chembl_jobs.py`: batch job worker for large queries (result file, optional mail).
-* `chembl_trials.py`: loads status and dates of the ~90 000 trials behind `drug_indication` from the ClinicalTrials.gov API (`ct_trial`, `ct_indication`, summary columns `trial_*` in `drug_indication`); run it after each ChEMBL import and now and then to refresh.
+* `chembl_trials.py`: loads status and dates of the ~90 000 trials behind `drug_indication` from the ClinicalTrials.gov API (`ct_trial`, `ct_indication`, summary columns `trial_*` in `drug_indication`); run it after each ChEMBL import. A monthly cron job runs `--open-only`, which refreshes only trials without posted results (status and dates can still change) and new NCT numbers.
 * `chembl_terms_de.py`: adds German disease names and synonyms from Wikidata (CC0) to `drug_indication` (`efo_term_de`, `efo_synonyms_de`, `mesh_heading_de`, `mesh_synonyms_de`) for the German disease search; run it again after each ChEMBL import.
 * `web/`: query form (PHP + Bootstrap, local assets).
 * `chembl-api.service`, `chembl-jobs.service`: example systemd units.

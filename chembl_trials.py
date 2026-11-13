@@ -13,7 +13,8 @@ NCT numbers) but stores no dates or outcomes. This script loads them from the Cl
                     trial_last_primary_completion (ACTUAL dates only), trial_last_results_posted
 
 Run it after each ChEMBL import and now and then to refresh the trial status:
-    python3 chembl_trials.py
+    python3 chembl_trials.py                    # all trials
+    python3 chembl_trials.py --open-only        # only trials without posted results and new NCT numbers (cron)
     python3 chembl_trials.py --summary-only     # recompute the drug_indication columns
 """
 import argparse
@@ -114,6 +115,9 @@ def summarise(con, cur):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--summary-only", action="store_true", help="only recompute the drug_indication columns")
+    ap.add_argument("--open-only", action="store_true",
+                    help="fetch only trials without posted results (status and dates can still change) and NCT "
+                         "numbers not loaded yet; trials with results are kept as they are")
     a = ap.parse_args()
     con = chembl.connect()
     cur = con.cursor()
@@ -128,6 +132,11 @@ def main():
         cur.executemany("INSERT INTO ct_indication (drugind_id, nct_id) VALUES (%s, %s)", sorted(links))
         con.commit()
         ids = sorted({n for _, n in links})
+        if a.open_only:
+            cur.execute("SELECT nct_id FROM ct_trial WHERE has_results = 1")
+            done = {r["nct_id"] for r in cur.fetchall()}
+            print(f"{len(ids)} NCT numbers, {len(done)} with results skipped", file=sys.stderr)
+            ids = [n for n in ids if n not in done]
         got = 0
         for i in range(0, len(ids), BATCH):
             rows = [row(st) for st in fetch(ids[i:i + BATCH])]
