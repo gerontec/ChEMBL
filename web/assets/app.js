@@ -28,25 +28,30 @@
   q.addEventListener("input", () => {
     clearTimeout(timer);
     const v = q.value.trim();
-    if (v.length < 3 || v === last || mode() === "disease") return;
+    if (v.length < 3 || v === last) return;
     timer = setTimeout(() => suggest(v), 350);
   });
 
   async function suggest(v) {
     last = v;
     const m = mode();
-    const url = m === "compound"
+    const url = m === "disease" ? "indications/terms?limit=15&q=" + encodeURIComponent(v)
+      : m === "compound"
       ? "compounds/search?limit=15&q=" + encodeURIComponent(v)
       : "targets/search?limit=15&q=" + encodeURIComponent(v) +
         (document.getElementById("org").value ? "&organism=" + encodeURIComponent(document.getElementById("org").value) : "");
     try {
       const r = await fetch(url, { headers: { Accept: "application/json" } });
       if (!r.ok) return;
-      const rows = await r.json();
+      const data = await r.json();
+      const rows = m === "disease" ? data.terms : data;
       sugg.innerHTML = "";
       rows.forEach(x => {
         const o = document.createElement("option");
-        if (m === "compound") {
+        if (m === "disease") {
+          o.value = x.term;
+          o.label = x.n_compounds + " / " + x.n_approved;
+        } else if (m === "compound") {
           o.value = x.pref_name || x.chembl_id;
           o.label = x.chembl_id;
         } else {

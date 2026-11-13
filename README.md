@@ -230,7 +230,8 @@ Swagger UI: `http://<host>:9099/docs`
 | `GET /targets/{name}/compounds` | all measured compounds, one row per compound |
 | `GET /targets/{name}/mechanisms` | drugs with a curated mechanism on the target |
 | `GET /targets/{name}/candidates?levels=` | every compound with evidence level |
-| `GET /indications/{disease}` | all compounds that reached a trial for a disease (EFO/MeSH prefix) |
+| `GET /indications/terms?q=` | disease terms (EFO/MeSH) matching a regular expression, with compound counts |
+| `GET /indications/{disease}` | all compounds that reached a trial for a disease; `{disease}` is a regular expression over EFO term and MeSH heading, case-insensitive (`lung cancer`, `^non-small cell`, `lung\|bronch`); common German disease words (`Darmkrebs`, `Schlaganfall`) are translated first |
 | `POST /jobs` | queue a batch job, see below |
 | `GET /jobs/{job_id}` | job status |
 | `GET /jobs/{job_id}/result` | download the job result (xlsx, or zip for csv/jsonl) |

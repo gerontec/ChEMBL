@@ -27,10 +27,21 @@ $T = [
   'title' => 'ChEMBL-Abfrage', 'lead' => 'Wirkstoffe, Zielstrukturen und klinische Studien aus der Datenbank ChEMBL – ohne Programmierkenntnisse.',
   'mode_compound' => 'Wirkstoff → Zielstrukturen', 'mode_target' => 'Zielstruktur → Wirkstoffe', 'mode_disease' => 'Krankheit → Wirkstoffe in Studien',
   'ph_compound' => 'z. B. Ivermectin, Hydroxychloroquin, Nirmatrelvir', 'ph_target' => 'z. B. ABCB1, P-Glycoprotein, CHEMBL240, P08183',
-  'ph_disease' => 'z. B. COVID-19, Malaria, Alzheimer',
+  'ph_disease' => 'z. B. Darmkrebs, lung cancer, ^breast, colo(n|rectal)',
   'help_compound' => 'Name, Handelsname oder ChEMBL-ID. Salze und andere Formen werden mitgesucht.',
   'help_target' => 'Gensymbol, Proteinname, UniProt-Nummer oder ChEMBL-ID. Bei Gensymbolen ggf. Organismus wählen.',
-  'help_disease' => 'Englischer Krankheitsname (Anfang genügt).',
+  'help_disease' => 'Krankheitsname oder Suchmuster (regulärer Ausdruck), Groß-/Kleinschreibung egal. Gängige deutsche Namen wie Darmkrebs werden übersetzt.',
+  'rx_title' => 'Suchmuster: Erklärung und Beispiele',
+  'rx_intro' => 'Gesucht wird in den englischen Krankheitsnamen von ChEMBL (EFO und MeSH). Normaler Text findet jeden Namen, der ihn enthält: „lung cancer“ findet auch „non-small cell lung cancer“. Mit Sonderzeichen wird die Suche genauer:',
+  'rx_rules' => [['^lung', 'beginnt mit „lung“'], ['cancer$', 'endet mit „cancer“'], ['^lung cancer$', 'genau dieser Name'],
+                 ['lung|bronch', '„lung“ oder „bronch“'], ['colo(n|rectal)', '„colon“ oder „colorectal“'],
+                 ['tumou?r', 'u darf fehlen: tumor, tumour'], ['lung.*carcinoma', 'beliebiger Text dazwischen'],
+                 ['type [12] diabetes', 'eine der Ziffern 1, 2'], ['\\(', 'Sonderzeichen ( ) [ ] . * + ? | ^ $ wörtlich: Backslash davor']],
+  'rx_german' => 'Deutsche Wörter (Darmkrebs, Brustkrebs, Lungenkrebs, Hautkrebs, Blutkrebs, Schlaganfall, Herzinfarkt, Bluthochdruck, Rheuma, Demenz, Schuppenflechte …) werden vor der Suche ins Englische übersetzt. Unbekannte deutsche Wörter bitte englisch eingeben.',
+  'rx_examples' => 'Beispiele zum Anklicken:',
+  'rx_terms' => 'Darunter fallende Krankheitsnamen (Anzahl Wirkstoffe / davon zugelassen) – Klick sucht genau diesen Namen:',
+  'rx_translated' => 'Übersetzt:', 'rx_searched' => 'Gesucht mit Muster',
+  'rx_bad' => 'Ungültiges Suchmuster',
   'levels' => 'Evidenzstufen', 'human' => 'nur menschliche Zielstrukturen', 'organism' => 'Organismus',
   'org_any' => 'alle', 'approved' => 'nur zugelassene Arzneimittel', 'named' => 'nur Wirkstoffe mit Namen',
   'search' => 'Abfragen', 'excel' => 'Als Excel herunterladen', 'results' => 'Ergebnisse', 'of' => 'von',
@@ -63,10 +74,21 @@ $T = [
   'title' => 'ChEMBL query', 'lead' => 'Compounds, targets and clinical trials from the ChEMBL database – no programming needed.',
   'mode_compound' => 'Compound → targets', 'mode_target' => 'Target → compounds', 'mode_disease' => 'Disease → compounds in trials',
   'ph_compound' => 'e.g. ivermectin, hydroxychloroquine, nirmatrelvir', 'ph_target' => 'e.g. ABCB1, P-glycoprotein, CHEMBL240, P08183',
-  'ph_disease' => 'e.g. COVID-19, malaria, Alzheimer',
+  'ph_disease' => 'e.g. lung cancer, ^breast, colo(n|rectal), Alzheimer',
   'help_compound' => 'Name, trade name or ChEMBL ID. Salts and other forms are included.',
   'help_target' => 'Gene symbol, protein name, UniProt accession or ChEMBL ID. Pick an organism for gene symbols if needed.',
-  'help_disease' => 'Disease name (the beginning is enough).',
+  'help_disease' => 'Disease name or search pattern (regular expression), case does not matter. Common German names such as Darmkrebs are translated.',
+  'rx_title' => 'Search patterns: explanation and examples',
+  'rx_intro' => 'The search runs over the English disease names in ChEMBL (EFO and MeSH). Plain text finds every name that contains it: “lung cancer” also finds “non-small cell lung cancer”. Special characters make the search more precise:',
+  'rx_rules' => [['^lung', 'starts with “lung”'], ['cancer$', 'ends with “cancer”'], ['^lung cancer$', 'exactly this name'],
+                 ['lung|bronch', '“lung” or “bronch”'], ['colo(n|rectal)', '“colon” or “colorectal”'],
+                 ['tumou?r', 'the u is optional: tumor, tumour'], ['lung.*carcinoma', 'any text in between'],
+                 ['type [12] diabetes', 'one of the digits 1, 2'], ['\\(', 'special characters ( ) [ ] . * + ? | ^ $ literally: backslash first']],
+  'rx_german' => 'German words (Darmkrebs, Brustkrebs, Lungenkrebs, Hautkrebs, Blutkrebs, Schlaganfall, Herzinfarkt, Bluthochdruck, Rheuma, Demenz, Schuppenflechte …) are translated to English before the search.',
+  'rx_examples' => 'Examples to click:',
+  'rx_terms' => 'Disease names it covers (compounds / approved) – click to search exactly this name:',
+  'rx_translated' => 'Translated:', 'rx_searched' => 'Searched with pattern',
+  'rx_bad' => 'Invalid search pattern',
   'levels' => 'Evidence levels', 'human' => 'human targets only', 'organism' => 'Organism',
   'org_any' => 'any', 'approved' => 'approved drugs only', 'named' => 'named compounds only',
   'search' => 'Search', 'excel' => 'Download as Excel', 'results' => 'Results', 'of' => 'of',
@@ -175,13 +197,24 @@ function chembl_link(?string $id, string $kind): string {
     return '<a href="https://www.ebi.ac.uk/chembl/explore/' . $kind . '/' . rawurlencode($id) . '" target="_blank" rel="noopener">' . h($id) . '</a>';
 }
 
+/** regular expression matching exactly one disease name */
+function exact_rx(string $term): string { return '^' . preg_quote($term) . '$'; }
+
+/** badges for the German words that were translated, and the pattern actually searched */
+function translated_note(?array $info, array $T): string {
+    if (!$info || empty($info['translated'])) return '';
+    $out = '<p class="small mb-2"><strong>' . h($T['rx_translated']) . '</strong> ';
+    foreach ($info['translated'] as $t) $out .= '<span class="me-2">' . h($t['german']) . ' → <code>' . h($t['english']) . '</code></span>';
+    return $out . '</p>';
+}
+
 function self_url(array $over): string {
     $p = array_merge($_GET, $over);
     return '?' . http_build_query(array_filter($p, fn($v) => $v !== null && $v !== '' && $v !== []));
 }
 
 // ------------------------------------------------------------------ run query
-$result = null; $error = null; $notfound = null; $compoundInfo = null;
+$result = null; $error = null; $notfound = null; $compoundInfo = null; $diseaseInfo = null; $terms = [];
 [$path, $jobEndpoint, $params] = query_spec($mode, $q, $levels, $human, $approved, $named, $organism);
 if ($q !== '') {
     $screen = $params;
@@ -190,8 +223,16 @@ if ($q !== '') {
     if ($code === 200) {
         $result = $data;
         if ($mode === 'compound') { [$c2, $compoundInfo] = api('/compounds/' . rawurlencode($q)); }
+        if ($mode === 'disease') {
+            $diseaseInfo = $data;
+            [$c3, $td] = api('/indications/terms', ['q' => $q, 'limit' => 60]);
+            $terms = $c3 === 200 ? ($td['terms'] ?? []) : [];
+        }
     } elseif ($code === 404) {
         $notfound = $data['detail']['candidates'] ?? [];
+        $diseaseInfo = $data['detail'] ?? null;
+    } elseif ($code === 400 && $mode === 'disease') {
+        $error = $T['rx_bad'] . ': ' . ($data['detail']['error'] ?? '') . ' – ' . ($data['detail']['hint'] ?? '');
     } elseif ($code === 429) {
         $error = $T['ratelimit'];
     } else {
@@ -288,6 +329,22 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
         </div>
       </div>
     </div>
+
+    <details class="opt opt-disease mt-3 small" <?= $mode === 'disease' && $q === '' ? 'open' : '' ?>>
+      <summary class="fw-semibold"><?= h($T['rx_title']) ?></summary>
+      <p class="mt-2 mb-1"><?= h($T['rx_intro']) ?></p>
+      <table class="table table-sm w-auto mb-2"><tbody>
+        <?php foreach ($T['rx_rules'] as [$rx, $txt]): ?>
+          <tr><td><code><?= h($rx) ?></code></td><td><?= h($txt) ?></td></tr>
+        <?php endforeach; ?>
+      </tbody></table>
+      <p class="mb-1"><?= h($T['rx_german']) ?></p>
+      <p class="mb-0"><?= h($T['rx_examples']) ?>
+        <?php foreach (['Darmkrebs', 'colo(n|rectal)', 'lung (cancer|carcinoma)', 'non-small cell', '^breast', 'melanoma|Hautkrebs', 'Alzheimer', 'COVID-19'] as $ex): ?>
+          <a class="badge text-bg-light text-decoration-none border" href="<?= h(self_url(['mode' => 'disease', 'q' => $ex, 'page' => null])) ?>"><code><?= h($ex) ?></code></a>
+        <?php endforeach; ?>
+      </p>
+    </details>
   </form>
 
   <?php if ($error): ?>
@@ -297,7 +354,13 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
   <?php if ($notfound !== null): ?>
     <div class="alert alert-info">
       <strong><?= h($T['notfound']) ?>:</strong> „<?= h($q) ?>“.
-      <?php if ($notfound): ?>
+      <?= translated_note($diseaseInfo, $T) ?>
+      <?php if ($notfound && $mode === 'disease'): ?>
+        <?= h($T['didyoumean']) ?>
+        <?php foreach ($notfound as $c): ?>
+          <a class="badge text-bg-light text-decoration-none" href="<?= h(self_url(['q' => exact_rx($c['term']), 'page' => null])) ?>"><?= h($c['term']) ?> (<?= (int)$c['n_compounds'] ?>)</a>
+        <?php endforeach; ?>
+      <?php elseif ($notfound): ?>
         <?= h($T['didyoumean']) ?>
         <?php foreach (array_slice($notfound, 0, 12) as $c):
             $val = $c['pref_name'] ?? $c['target_chembl_id'] ?? $c['chembl_id'] ?? '';
@@ -332,6 +395,15 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
         <?php endforeach; ?>
       </p>
     <?php elseif ($mode === 'disease'): ?>
+      <?= translated_note($diseaseInfo, $T) ?>
+      <?php if ($terms): ?>
+        <div class="small mb-2"><?= h($T['rx_terms']) ?><br>
+          <?php foreach ($terms as $t): ?>
+            <a class="badge text-bg-light text-decoration-none border fw-normal" title="<?= h($t['kind']) ?>"
+               href="<?= h(self_url(['q' => exact_rx($t['term']), 'page' => null])) ?>"><?= h($t['term']) ?> <span class="text-body-secondary"><?= (int)$t['n_compounds'] ?>/<?= (int)$t['n_approved'] ?></span></a>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
       <p class="text-body-secondary small mb-2"><?= h($T['indication_note']) ?></p>
     <?php endif; ?>
 

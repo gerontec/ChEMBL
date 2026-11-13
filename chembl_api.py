@@ -20,6 +20,7 @@ import threading
 import time
 from typing import Dict, List, Literal, Optional, Union
 
+import pymysql
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -113,6 +114,9 @@ app = FastAPI(
         "narrow with `organism=Homo sapiens`.\n"
         "* `pchembl` = −log10(molar IC50/EC50/Ki/Kd…); 6 = 1 µM, 9 = 1 nM. "
         "`max_phase` 4 = approved drug. `conf` = ChEMBL assay confidence score (9 = direct single protein).\n"
+        "* **Disease → compounds in trials**: `/indications/{disease}` — a regular expression over EFO terms and MeSH "
+        "headings, case-insensitive (`lung cancer`, `^non-small cell`, `lung|bronch`); `/indications/terms?q=` shows "
+        "which terms a pattern hits.\n"
         "* Target `CHEMBL612545` 'Unchecked' collects assays without a target assignment.\n"
         "* **ChEMBL ↔ NCBI nr** (`/nr/...`): targets with their nr protein entries (UniProt accession), organisms "
         "with an identical sequence, links to a DIAMOND homolog search; reverse: an nr accession → ChEMBL targets "
@@ -400,17 +404,54 @@ def nr_organisms(oid: int, limit: int = Query(500, ge=1, le=5000), cur=Depends(n
     return {"oid": oid, "organisms": nr_join.organisms(cur, oid, limit)}
 
 
+def _regex_or_400(fn, pattern):
+    """Run a query taking a REGEXP pattern; an invalid pattern becomes HTTP 400 with MariaDB's message."""
+    try:
+        return fn()
+    except pymysql.err.OperationalError as e:
+        if chembl.is_regex_error(e):
+            raise HTTPException(400, {"error": f"invalid search pattern '{pattern}': {e.args[1]}",
+                                      "hint": "plain text finds the text anywhere in the term; ^ = start, "
+                                              "$ = end, | = or; escape ( ) [ ] . * + ? with a backslash"})
+        raise
+
+
+@app.get("/indications/terms", tags=["indications"],
+         summary="Disease terms matching a pattern, with compound counts")
+def indication_terms(q: str = Query(..., min_length=1, max_length=200, description="regular expression"),
+                     limit: int = Query(40, ge=1, le=200), cur=Depends(db_cursor)):
+    """Which EFO terms and MeSH headings a pattern hits, each with the number of compounds in trials and of
+    approved drugs. Same pattern rules as `/indications/{disease}`; use it to check a pattern before the full
+    query or to pick one term exactly (`^term$`). German disease words are translated as in `/indications/{disease}`."""
+    pattern, translated = chembl.translate_german(q)
+    terms = _regex_or_400(lambda: chembl.indication_terms(cur, pattern, limit), q)
+    return {"query": q, "pattern": pattern, "translated": [{"german": g, "english": e} for g, e in translated],
+            "count": len(terms), "terms": terms}
+
+
 @app.get("/indications/{disease}", tags=["indications"],
          summary="Disease → all compounds that reached a clinical trial for it (any outcome)")
 def disease_indications(disease: str,
                         min_phase: Optional[float] = Query(None, description="min. phase for this indication"),
                         cur=Depends(db_cursor)):
-    """Prefix match on EFO term or MeSH heading, e.g. `COVID-19`. `phase_for_indication` is the highest
-    trial phase reached for this indication; it does not say whether the trial was positive."""
-    rows = chembl.indications_for_disease(cur, disease, min_phase)
+    """`disease` is a regular expression (PCRE, case-insensitive) matched against the EFO term and the MeSH
+    heading. Plain text finds it anywhere in the term: `lung cancer` also hits `non-small cell lung cancer`.
+    `^lung` = starts with, `cancer$` = ends with, `^lung cancer$` = exactly this term, `lung|bronch` = either,
+    `colou?r` = optional letter. `/indications/terms?q=` lists the terms a pattern hits.
+    Common German disease words are replaced by English patterns first (`Darmkrebs`, `Lungenkrebs`,
+    `Schlaganfall`); `pattern` in the answer shows what was searched, `translated` the replacements.
+    `phase_for_indication` is the highest trial phase reached for this indication; it does not say whether
+    the trial was positive. An invalid pattern gives 400."""
+    pattern, translated = chembl.translate_german(disease)
+    rows = _regex_or_400(lambda: chembl.indications_for_disease(cur, pattern, min_phase), disease)
+    tr = [{"german": g, "english": e} for g, e in translated]
     if not rows:
-        raise HTTPException(404, {"error": f"no indication matching '{disease}%'"})
-    return {"query": disease, "count": len(rows), "compounds": rows}
+        # suggest terms containing one of the longer words of the input
+        words = [re.escape(w) for w in re.findall(r"[^\W\d_]{4,}", pattern)]
+        cand = chembl.indication_terms(cur, "|".join(words), 12) if words else []
+        raise HTTPException(404, {"error": f"no indication matching pattern '{disease}'", "pattern": pattern,
+                                  "translated": tr, "candidates": cand})
+    return {"query": disease, "pattern": pattern, "translated": tr, "count": len(rows), "compounds": rows}
 
 
 # ------------------------------------------------------------------ jobs

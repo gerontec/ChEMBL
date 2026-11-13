@@ -28,6 +28,7 @@ import csv
 import json
 import os
 import sys
+import re
 from decimal import Decimal
 
 import pymysql
@@ -364,11 +365,123 @@ IND_COLS = """d.chembl_id AS compound_chembl_id, d.pref_name AS compound, d.max_
                FROM indication_refs r WHERE r.drugind_id = di.drugind_id) AS ref_urls"""
 
 
-def indications_for_disease(cur, term, min_phase=None):
-    """All compounds with a drug_indication row for a disease (EFO term or MeSH heading, prefix match).
+# ------------------------------------------------------------------ German disease words
+# ChEMBL names diseases in English (EFO, MeSH). German words in a disease pattern are replaced by an English
+# regular expression before the search, e.g. `Darmkrebs` -> colorectal/colon/rectal cancer|carcinoma|neoplasm.
+# Keys are folded (lower case, ä->ae, ö->oe, ü->ue, ß->ss); only words that differ from the English term are listed.
+_CANCER = r"(cancer|carcinoma|neoplasm|tumou?r|malignan)"
+_ORGANS = {          # German organ stem -> English stem(s); combined with a cancer word: Lungenkrebs, Leberkarzinom
+    "darm": "colo|colon|rect", "dickdarm": "colo|colon", "kolon": "colo|colon",
+    "kolorektal": "colorectal", "kolorektales": "colorectal", "mastdarm": "rect", "enddarm": "rect|anal",
+    "dünndarm": "small intestin|small bowel|duoden",
+    "lunge": "lung|bronch|pulmonary", "lungen": "lung|bronch|pulmonary", "bronchial": "lung|bronch",
+    "brust": "breast", "mamma": "breast", "prostata": "prostat", "magen": "gastric|stomach",
+    "bauchspeicheldrüsen": "pancrea", "bauchspeicheldrüse": "pancrea", "pankreas": "pancrea",
+    "leber": "liver|hepat", "leberzell": "hepatocellular|liver", "gallenblasen": "gallbladder|biliary",
+    "gallengangs": "bile duct|biliary|cholangio", "haut": "skin|cutaneous",
+    "gebärmutterhals": "cervi", "zervix": "cervi", "gebärmutter": "uter|endometri", "gebärmutterschleimhaut": "endometri",
+    "eierstock": "ovar", "eierstocks": "ovar", "ovarial": "ovar", "nieren": "kidney|renal", "niere": "kidney|renal",
+    "nierenzell": "renal cell", "blasen": "bladder|urothel", "harnblasen": "bladder|urothel",
+    "hoden": "testi|germ cell", "schilddrüsen": "thyroid", "speiseröhren": "esophag|oesophag",
+    "hirn": "brain|cerebr", "gehirn": "brain|cerebr", "knochen": "bone|osteo", "kehlkopf": "laryn",
+    "mund": "oral|mouth", "rachen": "pharyn", "kopf-hals": "head and neck", "lymphdrüsen": "lymph",
+}
+_SUFFIXES = ("krebserkrankung", "krebs", "karzinome", "karzinom", "tumoren", "tumore", "tumor", "neoplasie")
+_WORDS = {           # whole German words -> English regular expression
+    "krebs": _CANCER, "tumor": _CANCER, "karzinom": "carcinoma", "metastasen": "metasta",
+    "darmkrebs": r"(colo|colon|colonic|colorectal|rect|rectal|rectum) [a-z -]*" + _CANCER,
+    "hautkrebs": r"melanoma|(skin|cutaneous|basal cell|squamous cell) [a-z -]*" + _CANCER,
+    "schwarzer hautkrebs": "melanoma", "weisser hautkrebs": "basal cell|squamous cell carcinoma",
+    "blutkrebs": "leuk|lymphoma|myeloma", "leukaemie": "leuk", "lymphdruesenkrebs": "lymphoma", "lymphom": "lymphoma",
+    "hirntumor": r"glioma|glioblastoma|(brain|cerebr)[a-z -]*" + _CANCER, "glioblastom": "glioblastoma",
+    "melanom": "melanoma", "sarkom": "sarcoma", "myelom": "myeloma", "plasmozytom": "myeloma",
+    "bluthochdruck": "hypertension", "hypertonie": "hypertension", "herzinfarkt": "myocardial infarction",
+    "herzinsuffizienz": "heart failure", "herzschwaeche": "heart failure", "vorhofflimmern": "atrial fibrillation",
+    "schlaganfall": "stroke|cerebral infarction", "thrombose": "thrombo", "arteriosklerose": "atherosclero|arterioscler",
+    "zuckerkrankheit": "diabetes", "fettleibigkeit": "obesity", "adipositas": "obesity", "gicht": "gout",
+    "rheuma": "rheumat", "arthrose": "osteoarthritis", "osteoporose": "osteoporosis",
+    "schuppenflechte": "psoriasis", "neurodermitis": "atopic dermatitis|eczema", "ekzem": "eczema|dermatitis",
+    "morbus crohn": "crohn", "colitis ulcerosa": "ulcerative colitis", "reizdarm": "irritable bowel",
+    "demenz": "dementia", "multiple sklerose": "multiple sclerosis", "epilepsie": "epilepsy", "migraene": "migraine",
+    "schizophrenie": "schizophrenia", "depression": "depress", "angststoerung": "anxiety",
+    "grippe": "influenza", "lungenentzuendung": "pneumonia", "tuberkulose": "tuberculosis",
+    "blutarmut": "anemia|anaemia", "anaemie": "anemia|anaemia", "unfruchtbarkeit": "infertility",
+    "nierenversagen": "kidney failure|renal failure|kidney disease", "leberzirrhose": "cirrhosis",
+    "fettleber": "fatty liver|steatohepatitis|nafld|nash", "mukoviszidose": "cystic fibrosis",
+}
+
+
+def _fold(w):
+    return w.lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+
+
+_ORGANS_F = {_fold(k): v for k, v in _ORGANS.items()}
+_WORDS_F = {_fold(k): v for k, v in _WORDS.items()}
+_TOKEN = re.compile(r"\\.|[^\W\d_]+(?:[ -][^\W\d_]+)?", re.UNICODE)
+
+
+def _german_word(w):
+    """English regular expression for one German word (or two-word phrase), or None."""
+    f = _fold(w)
+    if f in _WORDS_F:
+        return _WORDS_F[f]
+    for suf in _SUFFIXES:
+        if f.endswith(suf) and len(f) > len(suf):
+            stem = f[:-len(suf)].rstrip("-")
+            for cand in (stem, stem[:-1] if stem.endswith(("s", "n", "e")) else None):
+                if cand and cand in _ORGANS_F:
+                    return f"({_ORGANS_F[cand]})[a-z -]*{_CANCER}"
+    return None
+
+
+def translate_german(pattern):
+    """Replace German disease words in a pattern by English regular expressions.
+
+    Returns (pattern, translated) with translated = [(german, english), ...]; escapes (`\\b`, `\\(`) are left
+    alone. A two-word phrase (`multiple Sklerose`) is tried first, then each word on its own."""
+    done = []
+
+    def repl(m):
+        tok = m.group(0)
+        if tok.startswith("\\"):
+            return tok
+        en = _german_word(tok)
+        if en:
+            done.append((tok, en))
+            return f"({en})"
+        parts = re.split(r"([ -])", tok)
+        if len(parts) == 3:
+            return repl_one(parts[0]) + parts[1] + repl_one(parts[2])
+        return tok
+
+    def repl_one(w):
+        en = _german_word(w)
+        if en:
+            done.append((w, en))
+            return f"({en})"
+        return w
+
+    return _TOKEN.sub(repl, pattern), done
+
+
+REGEX_ERROR = 1139          # MariaDB ER_REGEXP_ERROR: the pattern itself is invalid
+
+
+def is_regex_error(exc):
+    """True for a MariaDB error caused by an invalid regular expression (pymysql OperationalError 1139)."""
+    return bool(exc.args) and exc.args[0] == REGEX_ERROR
+
+
+def indications_for_disease(cur, pattern, min_phase=None):
+    """All compounds with a drug_indication row for a disease.
+
+    `pattern` is a regular expression (MariaDB REGEXP = PCRE, case-insensitive) matched against the EFO term
+    and the MeSH heading: `lung` finds every term containing lung, `^lung` terms starting with it,
+    `^lung cancer$` exactly that term, `lung|bronch` either word. An invalid pattern raises
+    pymysql.err.OperationalError 1139, see is_regex_error().
 
     drug_indication lists every drug that reached a clinical trial for the indication, whatever the outcome."""
-    args = [term + "%", term + "%"]
+    args = [pattern, pattern]
     ph = ""
     if min_phase is not None:
         ph = "AND di.max_phase_for_ind >= %s"
@@ -376,8 +489,27 @@ def indications_for_disease(cur, term, min_phase=None):
     return q(cur, f"""
         SELECT {IND_COLS}
         FROM drug_indication di JOIN molecule_dictionary d ON d.molregno = di.molregno
-        WHERE (di.efo_term LIKE %s OR di.mesh_heading LIKE %s) {ph}
+        WHERE (di.efo_term REGEXP %s OR di.mesh_heading REGEXP %s) {ph}
         ORDER BY di.max_phase_for_ind DESC, d.pref_name""", tuple(args))
+
+
+def indication_terms(cur, pattern, limit=40):
+    """Distinct disease terms matching the pattern, with the number of compounds and of approved drugs each.
+
+    Lets a user see which EFO terms / MeSH headings a pattern hits before (or after) running the full query.
+    Rows whose EFO term matches are counted under the EFO term, the others under the MeSH heading."""
+    return q(cur, """
+        SELECT term, kind, COUNT(DISTINCT molregno) AS n_compounds,
+               COUNT(DISTINCT CASE WHEN ph >= 4 THEN molregno END) AS n_approved
+        FROM (SELECT efo_term AS term, 'EFO' AS kind, molregno, max_phase_for_ind AS ph
+              FROM drug_indication WHERE efo_term REGEXP %s
+              UNION ALL
+              SELECT mesh_heading, 'MeSH', molregno, max_phase_for_ind
+              FROM drug_indication WHERE mesh_heading REGEXP %s AND NOT (efo_term REGEXP %s)) u
+        WHERE term IS NOT NULL
+        GROUP BY term, kind
+        ORDER BY n_compounds DESC, term
+        LIMIT %s""", (pattern, pattern, pattern, limit))
 
 
 def indications_for_compound(cur, molregnos):
