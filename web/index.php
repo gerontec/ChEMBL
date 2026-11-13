@@ -42,6 +42,11 @@ $T = [
   'rx_terms' => 'Darunter fallende Krankheitsnamen (Anzahl Wirkstoffe / davon zugelassen) – Klick sucht genau diesen Namen:',
   'rx_translated' => 'Übersetzt:', 'rx_searched' => 'Gesucht mit Muster',
   'rx_bad' => 'Ungültiges Suchmuster',
+  'col_trials' => 'Studien (mit Ergebnis)', 'col_pc' => 'Endpunkt gemessen (zuletzt)', 'col_resposted' => 'Ergebnis veröffentlicht (zuletzt)',
+  'tr_title' => 'Klinische Studien', 'tr_name' => 'Titel', 'tr_back' => 'zurück zur Liste', 'tr_status' => 'Status', 'tr_phase' => 'Phase', 'tr_n' => 'Teilnehmer',
+  'tr_start' => 'Beginn', 'tr_pc' => 'Primärer Endpunkt gemessen', 'tr_done' => 'Abschluss', 'tr_res' => 'Ergebnis veröffentlicht', 'tr_est' => 'geplant',
+  'tr_note' => 'Daten von ClinicalTrials.gov. „Primärer Endpunkt gemessen“ ist der Tag, an dem beim letzten Teilnehmer das Hauptzielkriterium erhoben wurde („geplant“ = noch nicht erreicht). Ob eine Studie erfolgreich war, steht nur im veröffentlichten Ergebnis auf ClinicalTrials.gov (Link).',
+  'tr_none' => 'Für diese Indikation sind keine Studien von ClinicalTrials.gov verknüpft.',
   'levels' => 'Evidenzstufen', 'human' => 'nur menschliche Zielstrukturen', 'organism' => 'Organismus',
   'org_any' => 'alle', 'approved' => 'nur zugelassene Arzneimittel', 'named' => 'nur Wirkstoffe mit Namen',
   'search' => 'Abfragen', 'excel' => 'Als Excel herunterladen', 'results' => 'Ergebnisse', 'of' => 'von',
@@ -89,6 +94,11 @@ $T = [
   'rx_terms' => 'Disease names it covers (compounds / approved) – click to search exactly this name:',
   'rx_translated' => 'Translated:', 'rx_searched' => 'Searched with pattern',
   'rx_bad' => 'Invalid search pattern',
+  'col_trials' => 'Trials (with results)', 'col_pc' => 'Outcome measured (latest)', 'col_resposted' => 'Results posted (latest)',
+  'tr_title' => 'Clinical trials', 'tr_name' => 'Title', 'tr_back' => 'back to the list', 'tr_status' => 'Status', 'tr_phase' => 'Phase', 'tr_n' => 'Participants',
+  'tr_start' => 'Start', 'tr_pc' => 'Primary outcome measured', 'tr_done' => 'Completion', 'tr_res' => 'Results posted', 'tr_est' => 'planned',
+  'tr_note' => 'Data from ClinicalTrials.gov. “Primary outcome measured” is the day the primary outcome was measured on the last participant (“planned” = not reached yet). Whether a trial was successful is only in the posted results on ClinicalTrials.gov (link).',
+  'tr_none' => 'No ClinicalTrials.gov trials are linked to this indication.',
   'levels' => 'Evidence levels', 'human' => 'human targets only', 'organism' => 'Organism',
   'org_any' => 'any', 'approved' => 'approved drugs only', 'named' => 'named compounds only',
   'search' => 'Search', 'excel' => 'Download as Excel', 'results' => 'Results', 'of' => 'of',
@@ -197,6 +207,9 @@ function chembl_link(?string $id, string $kind): string {
     return '<a href="https://www.ebi.ac.uk/chembl/explore/' . $kind . '/' . rawurlencode($id) . '" target="_blank" rel="noopener">' . h($id) . '</a>';
 }
 
+/** '2019-01-23' -> '2019-01' (day often not given by the trial registry) */
+function ym($d): string { return $d ? substr((string)$d, 0, 7) : ''; }
+
 /** regular expression matching exactly one disease name */
 function exact_rx(string $term): string { return '^' . preg_quote($term) . '$'; }
 
@@ -215,8 +228,14 @@ function self_url(array $over): string {
 
 // ------------------------------------------------------------------ run query
 $result = null; $error = null; $notfound = null; $compoundInfo = null; $diseaseInfo = null; $terms = [];
+$trialsId = ctype_digit((string)($_GET['trials'] ?? '')) ? (int)$_GET['trials'] : 0;
+$trials = null;
+if ($trialsId) {
+    [$ct, $trials] = api("/indications/$trialsId/trials");
+    if ($ct !== 200) { $error = $T['error'] . " ($ct)"; $trials = null; }
+}
 [$path, $jobEndpoint, $params] = query_spec($mode, $q, $levels, $human, $approved, $named, $organism);
-if ($q !== '') {
+if ($q !== '' && !$trialsId) {
     $screen = $params;
     if ($mode === 'target') { $screen['limit'] = PAGE_ROWS; $screen['offset'] = ($page - 1) * PAGE_ROWS; }
     [$code, $data] = api($path, $screen);
@@ -371,6 +390,39 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
     </div>
   <?php endif; ?>
 
+  <?php if ($trials !== null): $hd = $trials['indication']; ?>
+    <h2 class="h4"><?= h($T['tr_title']) ?>: <?= h($hd['compound'] ?: $hd['compound_chembl_id']) ?> – <?= h($hd['efo_term'] ?: $hd['mesh_heading']) ?></h2>
+    <p class="small"><a href="<?= h(self_url(['trials' => null])) ?>">← <?= h($T['tr_back']) ?></a></p>
+    <p class="text-body-secondary small"><?= h($T['tr_note']) ?></p>
+    <?php if (!$trials['trials']): ?>
+      <div class="alert alert-light border"><?= h($T['tr_none']) ?></div>
+    <?php else: ?>
+      <div class="table-responsive border rounded">
+      <table class="table table-sm table-hover table-striped align-middle mb-0 sortable">
+        <thead class="table-light"><tr>
+          <th>NCT</th><th><?= h($T['tr_name']) ?></th><th><?= h($T['tr_status']) ?></th><th><?= h($T['tr_phase']) ?></th>
+          <th data-num><?= h($T['tr_n']) ?></th><th><?= h($T['tr_start']) ?></th><th><?= h($T['tr_pc']) ?></th>
+          <th><?= h($T['tr_done']) ?></th><th><?= h($T['tr_res']) ?></th>
+        </tr></thead>
+        <tbody>
+        <?php foreach ($trials['trials'] as $t): ?>
+          <tr>
+            <td class="small text-nowrap"><a href="<?= h($t['url']) ?>" target="_blank" rel="noopener"><?= h($t['nct_id']) ?></a></td>
+            <td class="small"><?= h($t['title']) ?></td><td class="small"><?= h($t['status']) ?><?php if (!empty($t['why_stopped'])): ?><br><em class="text-body-secondary"><?= h($t['why_stopped']) ?></em><?php endif; ?></td>
+            <td class="small text-nowrap"><?= h(str_replace('PHASE', '', (string)$t['phase'])) ?></td>
+            <td data-v="<?= h($t['enrollment']) ?>"><?= h($t['enrollment']) ?></td>
+            <td class="text-nowrap"><?= h(ym($t['start_date'])) ?></td>
+            <td class="text-nowrap"><?= h(ym($t['primary_completion_date'])) ?><?php if (($t['primary_completion_type'] ?? '') === 'ESTIMATED'): ?> <span class="badge text-bg-light border"><?= h($T['tr_est']) ?></span><?php endif; ?></td>
+            <td class="text-nowrap"><?= h(ym($t['completion_date'])) ?></td>
+            <td class="text-nowrap"><?php if ($t['results_first_posted']): ?><a href="<?= h($t['url']) ?>?tab=results" target="_blank" rel="noopener"><?= h(ym($t['results_first_posted'])) ?></a><?php endif; ?></td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+      </div>
+    <?php endif; ?>
+  <?php endif; ?>
+
   <?php if ($result !== null): ?>
     <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
       <h2 class="h4 mb-0 me-auto">
@@ -425,7 +477,8 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
           <th data-num><?= h($T['col_docs']) ?></th><th><?= h($T['col_mech']) ?></th><th><?= h($T['col_id']) ?></th>
         <?php else: ?>
           <th><?= h($T['col_compound']) ?></th><th data-num><?= h($T['col_indphase']) ?></th><th data-num><?= h($T['col_phase']) ?></th>
-          <th><?= h($T['col_indication']) ?></th><th><?= h($T['col_refs']) ?></th><th><?= h($T['col_id']) ?></th>
+          <th><?= h($T['col_indication']) ?></th><th data-num><?= h($T['col_trials']) ?></th><th><?= h($T['col_pc']) ?></th>
+          <th><?= h($T['col_resposted']) ?></th><th><?= h($T['col_refs']) ?></th><th><?= h($T['col_id']) ?></th>
         <?php endif; ?>
         </tr></thead>
         <tbody>
@@ -448,6 +501,9 @@ header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style
             <td data-v="<?= h($r['phase_for_indication']) ?>"><?= h(phase_label($r['phase_for_indication'], $T)) ?></td>
             <td data-v="<?= h($r['max_phase_any']) ?>"><?= h(phase_label($r['max_phase_any'], $T)) ?></td>
             <td class="small"><?= h($r['efo_term'] ?: $r['mesh_heading']) ?><?php if ($lang === 'de' && !empty($r['indication_de'])): ?><br><em class="text-body-secondary"><?= h($r['indication_de']) ?></em><?php endif; ?></td>
+            <td data-v="<?= h($r['trial_n'] ?? '') ?>" class="text-nowrap"><?php if (!empty($r['trial_n'])): ?><a href="<?= h(self_url(['trials' => $r['indication_id']])) ?>"><?= (int)$r['trial_n'] ?></a> (<?= (int)$r['trial_n_results'] ?>)<?php endif; ?></td>
+            <td class="text-nowrap"><?= h(ym($r['trial_last_primary_completion'] ?? '')) ?></td>
+            <td class="text-nowrap"><?= h(ym($r['trial_last_results_posted'] ?? '')) ?></td>
             <td class="small"><?php if ($refs): ?><a href="<?= h($refs[0]) ?>" target="_blank" rel="noopener"><?= h($r['ref_types']) ?></a><?php else: ?><?= h($r['ref_types']) ?><?php endif; ?></td>
             <td class="small"><?= chembl_link($r['compound_chembl_id'], 'compound') ?></td>
           <?php endif; ?>

@@ -429,6 +429,22 @@ def indication_terms(q: str = Query(..., min_length=1, max_length=200, descripti
             "count": len(terms), "terms": terms}
 
 
+@app.get("/indications/{indication_id}/trials", tags=["indications"],
+         summary="Clinical trials of one indication with their dates (ClinicalTrials.gov)")
+def indication_trials(indication_id: int, cur=Depends(db_cursor)):
+    """`indication_id` comes from `/indications/{disease}`. Per trial: status, phase, enrollment, start date,
+    **primary completion date** (the primary outcome was measured on the last participant; `ACTUAL` or
+    `ESTIMATED`), completion date and the date results were first posted. Loaded by chembl_trials.py;
+    whether a trial was positive is only in the posted results on ClinicalTrials.gov."""
+    try:
+        head, trials = chembl.indication_trials(cur, indication_id)
+    except pymysql.err.ProgrammingError:
+        raise HTTPException(404, {"error": "trial data not loaded (chembl_trials.py)"})
+    if head is None:
+        raise HTTPException(404, {"error": f"no indication {indication_id}"})
+    return {"indication": head, "count": len(trials), "trials": trials}
+
+
 @app.get("/indications/{disease}", tags=["indications"],
          summary="Disease → all compounds that reached a clinical trial for it (any outcome)")
 def disease_indications(disease: str,
@@ -442,6 +458,9 @@ def disease_indications(disease: str,
     `Schlaganfall`); `pattern` in the answer shows what was searched, `translated` the replacements.
     The input as typed is also matched against German disease names and synonyms from Wikidata
     (`indication_de`), e.g. `Schuppenflechte`, `Mukoviszidose`, `Kolorektal`.
+    Trial dates per row (from ClinicalTrials.gov): `trial_n`, `trial_n_results`, `trial_first_start`,
+    `trial_last_primary_completion` (latest actual date the primary outcome was measured) and
+    `trial_last_results_posted`; the single trials are under `/indications/{indication_id}/trials`.
     `phase_for_indication` is the highest trial phase reached for this indication; it does not say whether
     the trial was positive. An invalid pattern gives 400."""
     pattern, translated = chembl.translate_german(disease)

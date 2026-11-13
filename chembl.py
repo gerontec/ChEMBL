@@ -472,17 +472,30 @@ def is_regex_error(exc):
     return bool(exc.args) and exc.args[0] == REGEX_ERROR
 
 
-_DE_COLS = None
+_COLS = {}
+
+
+def _has_columns(cur, *cols):
+    """True when drug_indication has all these columns (checked once per set)."""
+    if cols not in _COLS:
+        cur.execute(f"""SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE()
+                        AND table_name = 'drug_indication' AND column_name IN ({",".join(["%s"] * len(cols))})""", cols)
+        _COLS[cols] = cur.fetchone()["n"] == len(cols)
+    return _COLS[cols]
 
 
 def has_german_columns(cur):
-    """True when chembl_terms_de.py has added the German name columns to drug_indication (checked once)."""
-    global _DE_COLS
-    if _DE_COLS is None:
-        cur.execute("""SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE()
-                       AND table_name = 'drug_indication' AND column_name IN ('efo_term_de', 'mesh_heading_de')""")
-        _DE_COLS = cur.fetchone()["n"] == 2
-    return _DE_COLS
+    """True when chembl_terms_de.py has added the German name columns to drug_indication."""
+    return _has_columns(cur, "efo_term_de", "mesh_heading_de")
+
+
+def has_trial_columns(cur):
+    """True when chembl_trials.py has added the ClinicalTrials.gov summary columns to drug_indication."""
+    return _has_columns(cur, "trial_n", "trial_last_primary_completion")
+
+
+TRIAL_COLS = """, di.trial_n, di.trial_n_results, di.trial_first_start, di.trial_last_primary_completion,
+               di.trial_last_results_posted"""
 
 
 _DE_MATCH = "CONCAT_WS('|', di.efo_term_de, di.efo_synonyms_de, di.mesh_heading_de, di.mesh_synonyms_de) REGEXP %s"
@@ -513,11 +526,33 @@ def indications_for_disease(cur, pattern, min_phase=None, pattern_de=None):
         ph = "AND di.max_phase_for_ind >= %s"
         args.append(min_phase)
     de = ", COALESCE(di.efo_term_de, di.mesh_heading_de) AS indication_de" if has_german_columns(cur) else ""
+    tr = TRIAL_COLS if has_trial_columns(cur) else ""
     return q(cur, f"""
-        SELECT {IND_COLS}{de}
+        SELECT di.drugind_id AS indication_id, {IND_COLS}{de}{tr}
         FROM drug_indication di JOIN molecule_dictionary d ON d.molregno = di.molregno
         WHERE {cond} {ph}
         ORDER BY di.max_phase_for_ind DESC, d.pref_name""", tuple(args))
+
+
+def indication_trials(cur, indication_id):
+    """The ClinicalTrials.gov trials of one drug_indication row (chembl_trials.py), newest first.
+
+    primary_completion_date is when the primary outcome was measured on the last participant
+    (ACTUAL or ESTIMATED); results_first_posted when results appeared on ClinicalTrials.gov."""
+    head = q(cur, f"""SELECT di.drugind_id AS indication_id, {IND_COLS}
+                      FROM drug_indication di JOIN molecule_dictionary d ON d.molregno = di.molregno
+                      WHERE di.drugind_id = %s""", (indication_id,))
+    if not head:
+        return None, []
+    trials = q(cur, """SELECT ci.nct_id, t.title, t.status, t.why_stopped, t.phase, t.enrollment, t.start_date,
+                              t.primary_completion_date, t.primary_completion_type, t.completion_date,
+                              t.results_first_posted, t.has_results,
+                              CONCAT('https://clinicaltrials.gov/study/', ci.nct_id) AS url
+                       FROM ct_indication ci LEFT JOIN ct_trial t ON t.nct_id = ci.nct_id
+                       WHERE ci.drugind_id = %s
+                       ORDER BY t.primary_completion_date IS NULL, t.primary_completion_date DESC, ci.nct_id""",
+               (indication_id,))
+    return head[0], trials
 
 
 def indication_terms(cur, pattern, limit=40, pattern_de=None):

@@ -231,6 +231,7 @@ Swagger UI: `http://<host>:9099/docs`
 | `GET /targets/{name}/mechanisms` | drugs with a curated mechanism on the target |
 | `GET /targets/{name}/candidates?levels=` | every compound with evidence level |
 | `GET /indications/terms?q=` | disease terms (EFO/MeSH) matching a regular expression, with compound counts |
+| `GET /indications/{indication_id}/trials` | the ClinicalTrials.gov trials of one indication with start, primary completion (outcome measured), completion and results-posted dates |
 | `GET /indications/{disease}` | all compounds that reached a trial for a disease; `{disease}` is a regular expression over EFO term and MeSH heading, case-insensitive (`lung cancer`, `^non-small cell`, `lung\|bronch`); common German disease words (`Darmkrebs`, `Schlaganfall`) are translated first, and the input is also matched against German names from Wikidata (`chembl_terms_de.py`) |
 | `POST /jobs` | queue a batch job, see below |
 | `GET /jobs/{job_id}` | job status |
@@ -374,6 +375,7 @@ Output as aligned text, `--csv` or `--json`.
 * `chembl_api.py`: REST API on top of `chembl.py`, Swagger UI at `/docs`.
 * `chembl_mech_build.py`: builds the table `x_mech_candidates` and the view `x_mech_evidence` (evidence layer).
 * `chembl_jobs.py`: batch job worker for large queries (result file, optional mail).
+* `chembl_trials.py`: loads status and dates of the ~90 000 trials behind `drug_indication` from the ClinicalTrials.gov API (`ct_trial`, `ct_indication`, summary columns `trial_*` in `drug_indication`); run it after each ChEMBL import and now and then to refresh.
 * `chembl_terms_de.py`: adds German disease names and synonyms from Wikidata (CC0) to `drug_indication` (`efo_term_de`, `efo_synonyms_de`, `mesh_heading_de`, `mesh_synonyms_de`) for the German disease search; run it again after each ChEMBL import.
 * `web/`: query form (PHP + Bootstrap, local assets).
 * `chembl-api.service`, `chembl-jobs.service`: example systemd units.
